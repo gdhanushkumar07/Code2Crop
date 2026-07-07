@@ -210,7 +210,7 @@ export default function Home() {
               { label: "Features", href: "#features" },
               { label: "Technology", href: "#technology" },
               { label: "Impact", href: "#impact" },
-              { label: "Demo", href: "#demo" },
+
             ].map((item) => (
               <a
                 key={item.label}
@@ -290,12 +290,7 @@ export default function Home() {
             >
               RSK Operations Center
             </Link>
-            <Link
-              href="/demo"
-              className="flex items-center gap-2 px-6.5 py-4 rounded-full text-xs font-bold text-ai-purple bg-ai-purple/5 border border-ai-purple/15 hover:bg-ai-purple/10 transition-all font-mono"
-            >
-              Launch Live Demo Script
-            </Link>
+
           </motion.div>
         </motion.div>
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sun,
@@ -25,11 +25,14 @@ import {
   CloudSun,
   ShieldCheck,
   CheckCircle,
+  ImagePlus,
+  X,
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import Link from "next/link";
 import VoiceRecorder from "@/components/voice/VoiceRecorder";
 import AIPipeline from "@/components/ai/AIPipeline";
+import PlatformSelectionModal from "@/components/chat/PlatformSelectionModal";
 
 // Mock weather forecast
 const WEATHER_DATA = [
@@ -90,16 +93,35 @@ interface ChatMessage {
   timestamp: string;
   reasoningSteps?: string[];
   confidence?: number;
+  imageUrl?: string;
+  diseaseResult?: {
+    diseaseName: string;
+    confidence: number;
+    severity: "low" | "medium" | "high";
+    treatment: string[];
+  };
+  platform?: "web" | "whatsapp";
+}
+
+// Generate or retrieve anonymous user ID
+function getUserId(): string {
+  if (typeof window === "undefined") return "anon";
+  let userId = localStorage.getItem("c2c_user_id");
+  if (!userId) {
+    userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    localStorage.setItem("c2c_user_id", userId);
+  }
+  return userId;
 }
 
 export default function FarmerPortal() {
-  const [activeTab, setActiveTab] = useState<"home" | "recommendations" | "disease" | "chat">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "recommendations" | "chat">("home");
   const [expandedCrop, setExpandedCrop] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       id: "1",
       sender: "ai",
-      text: "Good morning, Ramu! How is your crop doing today? You can write or press the mic button to speak in Telugu, Hindi, or Kannada.",
+      text: "Good morning, Ramu! How is your crop doing today? You can write, press the mic button to speak, or upload a leaf photo for disease scanning — all right here in this chat.",
       timestamp: "09:30 AM",
     },
   ]);
@@ -108,24 +130,88 @@ export default function FarmerPortal() {
   const [activePipelineStep, setActivePipelineStep] = useState(-1);
   const [isPipelineVisible, setIsPipelineVisible] = useState(false);
 
-  // Disease Scanner State
-  const [dragActive, setDragActive] = useState(false);
-  const [scanningImage, setScanningImage] = useState<string | null>(null);
-  const [scanStatus, setScanStatus] = useState<"idle" | "uploading" | "scanning" | "diagnosed" | "escalated">("idle");
-  const [diagnosticResult, setDiagnosticResult] = useState<{
-    diseaseName: string;
-    confidence: number;
-    severity: "low" | "medium" | "high";
-    treatment: string[];
-  } | null>(null);
+  // Image upload state (for inline disease scanning in chat)
+  const [pendingImage, setPendingImage] = useState<string | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Platform selection modal
+  const [showPlatformModal, setShowPlatformModal] = useState(false);
+  const [hasCheckedPlatform, setHasCheckedPlatform] = useState(false);
 
   // Trigger alert
   const [showAlert, setShowAlert] = useState(true);
 
+  // Firebase user ID
+  const [userId, setUserId] = useState<string>("anon");
+
+  // Initialize userId and check platform modal on mount
+  useEffect(() => {
+    const id = getUserId();
+    setUserId(id);
+
+    // Check if user has chosen a platform before
+    const platformChosen = localStorage.getItem("c2c_platform_chosen");
+    if (!platformChosen) {
+      setShowPlatformModal(true);
+    }
+    setHasCheckedPlatform(true);
+
+    // Load chat history from Firebase
+    loadChatHistory(id);
+  }, []);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
+
+  // Load chat history from Firebase
+  const loadChatHistory = async (uid: string) => {
+    try {
+      const res = await fetch(`/api/chat/history?userId=${uid}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.messages && data.messages.length > 0) {
+          setChatMessages(data.messages);
+        }
+      }
+    } catch (err) {
+      // Firebase not configured yet — silently fall back to local state
+      console.log("Chat history fetch skipped (Firebase may not be configured):", err);
+    }
+  };
+
+  // Persist a single message to Firebase
+  const persistMessage = async (message: ChatMessage) => {
+    try {
+      await fetch("/api/chat/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, message: { ...message, platform: "web" } }),
+      });
+    } catch (err) {
+      // Firebase not configured yet — silently skip
+      console.log("Message persist skipped (Firebase may not be configured):", err);
+    }
+  };
+
+  // Platform modal handlers
+  const handleSelectWebsite = () => {
+    localStorage.setItem("c2c_platform_chosen", "website");
+    setShowPlatformModal(false);
+  };
+
+  const handleSelectWhatsApp = () => {
+    localStorage.setItem("c2c_platform_chosen", "whatsapp");
+    setShowPlatformModal(false);
+  };
+
   // Voice Note complete handler
   const handleVoiceNoteResult = (text: string, translation: string, language: string) => {
     setIsVoiceOpen(false);
-    
+
     // Add farmer message
     const farmerMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -134,10 +220,11 @@ export default function FarmerPortal() {
       translation: translation,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
-    
+
     setChatMessages((prev) => [...prev, farmerMsg]);
+    persistMessage(farmerMsg);
     setIsPipelineVisible(true);
-    
+
     // Cycle through pipeline
     let step = 0;
     setActivePipelineStep(0);
@@ -162,6 +249,7 @@ export default function FarmerPortal() {
             ],
           };
           setChatMessages((prev) => [...prev, aiMsg]);
+          persistMessage(aiMsg);
           setActivePipelineStep(-1);
           setIsPipelineVisible(false);
         }, 1000);
@@ -172,110 +260,119 @@ export default function FarmerPortal() {
   };
 
   const handleSendText = () => {
-    if (!inputVal.trim()) return;
+    if (!inputVal.trim() && !pendingImage) return;
 
     const farmerMsg: ChatMessage = {
       id: Date.now().toString(),
       sender: "farmer",
-      text: inputVal,
+      text: inputVal || (pendingImage ? "📷 Uploaded a leaf image for diagnosis" : ""),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      imageUrl: pendingImage || undefined,
     };
 
     setChatMessages((prev) => [...prev, farmerMsg]);
-    setInputVal("");
-    
-    setTimeout(() => {
-      const aiMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        sender: "ai",
-        text: "I am checking your soil and weather data now. In Karimnagar district, the IMD predicts a dry spell starting next Tuesday. I recommend focusing on drought-resistant crops like Groundnut or Maize.",
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      };
-      setChatMessages((prev) => [...prev, aiMsg]);
-    }, 1000);
-  };
+    persistMessage(farmerMsg);
 
-  // Disease Scanner handlers
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
+    const hadImage = !!pendingImage;
+    setInputVal("");
+    setPendingImage(null);
+
+    if (hadImage) {
+      // Trigger inline disease scanning
+      processInlineScan();
+    } else {
+      // Normal text response
+      setTimeout(() => {
+        const aiMsg: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          sender: "ai",
+          text: "I am checking your soil and weather data now. In Karimnagar district, the IMD predicts a dry spell starting next Tuesday. I recommend focusing on drought-resistant crops like Groundnut or Maize.",
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+        setChatMessages((prev) => [...prev, aiMsg]);
+        persistMessage(aiMsg);
+      }, 1000);
     }
   };
 
-  const processScan = (imageUrl: string) => {
-    setScanningImage(imageUrl);
-    setScanStatus("scanning");
-    
+  // Inline disease scanning within chat
+  const processInlineScan = () => {
+    setIsScanning(true);
+
+    // Show scanning indicator for 2.5 seconds
     setTimeout(() => {
-      setScanStatus("diagnosed");
-      setDiagnosticResult({
-        diseaseName: "Early Leaf Spot (Cercospora arachidicola)",
-        confidence: 0.58, 
-        severity: "medium",
-        treatment: [
-          "Apply Chlorothalonil fungicide (2.0 g/L water) immediately.",
-          "Clear crop debris from infected rows to prevent spore dispersal.",
-          "Ensure adequate soil aeration by reducing localized flooding.",
-        ],
-      });
+      setIsScanning(false);
+
+      const diagnosisMsg: ChatMessage = {
+        id: (Date.now() + 2).toString(),
+        sender: "ai",
+        text: "I've analyzed the leaf image you uploaded. Here are my findings:",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        diseaseResult: {
+          diseaseName: "Early Leaf Spot (Cercospora arachidicola)",
+          confidence: 0.58,
+          severity: "medium",
+          treatment: [
+            "Apply Chlorothalonil fungicide (2.0 g/L water) immediately.",
+            "Clear crop debris from infected rows to prevent spore dispersal.",
+            "Ensure adequate soil aeration by reducing localized flooding.",
+          ],
+        },
+      };
+
+      setChatMessages((prev) => [...prev, diagnosisMsg]);
+      persistMessage(diagnosisMsg);
     }, 2500);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (reader.result) {
-          processScan(reader.result as string);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Image selection handler
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       const reader = new FileReader();
       reader.onload = () => {
         if (reader.result) {
-          processScan(reader.result as string);
+          setPendingImage(reader.result as string);
         }
       };
       reader.readAsDataURL(file);
     }
+    // Reset file input so the same file can be selected again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
-  const escalateCase = () => {
-    setScanStatus("escalated");
-    
+  // Escalate case from inline diagnosis
+  const escalateFromChat = (diseaseResult: ChatMessage["diseaseResult"]) => {
     const newCase = {
       id: "case_" + Date.now(),
       farmerName: "Ramu Patel",
       village: "Peddapalli Village",
       crop: "Groundnut",
-      issue: "Suspected Cercospora Leaf Spot (AI Confidence: 58%)",
+      issue: `Suspected ${diseaseResult?.diseaseName} (AI Confidence: ${Math.round((diseaseResult?.confidence || 0) * 100)}%)`,
       severity: "high",
       lat: 42.5,
       lng: 35.8,
-      confidence: 0.58,
-      image: scanningImage || "https://images.unsplash.com/photo-1599599810769-bcde5a160d32?auto=format&fit=crop&w=150&q=80",
+      confidence: diseaseResult?.confidence || 0.58,
+      image: "https://images.unsplash.com/photo-1599599810769-bcde5a160d32?auto=format&fit=crop&w=150&q=80",
       description: "Low-confidence leaf spot diagnostics flagged. Crop shows yellow spots with brown borders.",
     };
-    
+
     const existing = localStorage.getItem("escalated_cases");
     const cases = existing ? JSON.parse(existing) : [];
     cases.push(newCase);
     localStorage.setItem("escalated_cases", JSON.stringify(cases));
+
+    // Add confirmation message to chat
+    const escalationMsg: ChatMessage = {
+      id: (Date.now() + 3).toString(),
+      sender: "ai",
+      text: "✅ This case has been escalated to your nearest Rythu Seva Kendra (RSK) officer. Your query, GPS coordinates, and photo have been transmitted. You will receive an SMS alert when they reply.",
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    setChatMessages((prev) => [...prev, escalationMsg]);
+    persistMessage(escalationMsg);
   };
 
   return (
@@ -296,22 +393,20 @@ export default function FarmerPortal() {
             </div>
           </div>
 
-          {/* Navigation Tabs */}
+          {/* Navigation Tabs — 3 tabs (disease merged into chat) */}
           <nav className="hidden md:flex items-center gap-1.5 p-1 rounded-full bg-forest-light/5 border border-forest-medium/5">
             {[
               { id: "home", label: "Home Hub" },
               { id: "recommendations", label: "Crop Suitability" },
-              { id: "disease", label: "Disease Scan" },
-              { id: "chat", label: "Agronomist Chat" },
+              { id: "chat", label: "AI Agronomist" },
             ].map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`text-xs font-bold px-4 py-2 rounded-full transition-all ${
-                  activeTab === tab.id
+                onClick={() => setActiveTab(tab.id as "home" | "recommendations" | "chat")}
+                className={`text-xs font-bold px-4 py-2 rounded-full transition-all ${activeTab === tab.id
                     ? "bg-white text-forest-dark shadow-sm"
                     : "text-forest-medium/60 hover:text-forest-medium"
-                }`}
+                  }`}
               >
                 {tab.label}
               </button>
@@ -329,7 +424,7 @@ export default function FarmerPortal() {
 
       {/* Main Content */}
       <main className="relative z-10 flex-1 max-w-7xl w-full mx-auto px-6 py-8">
-        
+
         {/* Proactive Dry-Spell Warning Alert banner */}
         <AnimatePresence>
           {showAlert && (
@@ -374,7 +469,7 @@ export default function FarmerPortal() {
             <div className="grid md:grid-cols-3 gap-8 items-start">
               {/* Left Column: Greeting and Status */}
               <div className="md:col-span-2 space-y-8">
-                
+
                 {/* Greeting Card */}
                 <div className="p-6 rounded-[32px] bg-white border border-forest-medium/5 flex flex-col justify-between relative overflow-hidden shadow-sm">
                   <div>
@@ -386,7 +481,7 @@ export default function FarmerPortal() {
                       Plot ID: Karimnagar-Zone 3B • Current Season: Kharif
                     </p>
                   </div>
-                  
+
                   {/* Status Grid */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-8 pt-6 border-t border-forest-medium/5">
                     <div className="space-y-1">
@@ -463,11 +558,11 @@ export default function FarmerPortal() {
 
               {/* Right Column: AI Insights & Quick Actions */}
               <div className="space-y-8">
-                
+
                 {/* AI Agronomist Quick Panel */}
                 <div className="p-6 rounded-[32px] bg-gradient-to-tr from-forest-medium to-forest-light text-white shadow-xl relative overflow-hidden flex flex-col justify-between min-h-[320px]">
                   <div className="absolute right-[-40px] bottom-[-40px] w-48 h-48 rounded-full bg-white/5 blur-xl pointer-events-none" />
-                  
+
                   <div className="space-y-4 text-left">
                     <span className="text-[9px] font-bold uppercase tracking-widest text-natural-green bg-white/10 px-3 py-1 rounded-full w-fit block">
                       AI Agronomist
@@ -508,7 +603,7 @@ export default function FarmerPortal() {
                   </button>
 
                   <button
-                    onClick={() => setActiveTab("disease")}
+                    onClick={() => setActiveTab("chat")}
                     className="w-full p-4 rounded-2xl bg-white border border-forest-medium/5 hover:border-forest-light/20 flex justify-between items-center transition-all group shadow-sm text-left"
                   >
                     <div className="flex items-center gap-3">
@@ -516,8 +611,8 @@ export default function FarmerPortal() {
                         <FileText className="w-5 h-5" />
                       </span>
                       <div>
-                        <span className="text-xs font-bold block text-forest-dark">Leaf Diagnostic Scan</span>
-                        <span className="text-[10px] text-forest-medium/40 block font-medium mt-0.5">Upload leaf photos for treatment guides</span>
+                        <span className="text-xs font-bold block text-forest-dark">Scan Leaf in Chat</span>
+                        <span className="text-[10px] text-forest-medium/40 block font-medium mt-0.5">Upload leaf photos for AI diagnosis in chat</span>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-forest-medium/50 group-hover:translate-x-1 transition-transform" />
@@ -540,7 +635,7 @@ export default function FarmerPortal() {
               <div className="grid md:grid-cols-3 gap-8">
                 {CROP_REC.map((crop, idx) => {
                   const isExpanded = expandedCrop === crop.id;
-                  
+
                   return (
                     <motion.div
                       key={crop.name}
@@ -584,14 +679,14 @@ export default function FarmerPortal() {
                           <span className="text-[9px] text-forest-medium/40 block uppercase font-bold">Soil Health check</span>
                           <span className="text-xs font-bold block text-forest-dark mt-0.5">{crop.soilHealth}</span>
                         </div>
-                        
+
                         <div className="p-3.5 rounded-2xl bg-forest-light/5 border border-forest-medium/5">
                           <span className="text-[9px] text-forest-medium/40 block uppercase font-bold">Market Returns</span>
                           <span className="text-xs font-bold block text-natural-green mt-0.5">{crop.profit}</span>
                         </div>
 
                         <p className="text-xs text-forest-medium/70 italic leading-relaxed pt-2 font-medium">
-                          "{crop.reason}"
+                          &quot;{crop.reason}&quot;
                         </p>
 
                         {/* Expandable Details container */}
@@ -603,7 +698,7 @@ export default function FarmerPortal() {
                             {isExpanded ? "Hide Details" : "Read Grounding Details"}
                             <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isExpanded ? "rotate-180" : ""}`} />
                           </button>
-                          
+
                           <AnimatePresence>
                             {isExpanded && (
                               <motion.p
@@ -636,183 +731,103 @@ export default function FarmerPortal() {
             </div>
           )}
 
-          {activeTab === "disease" && (
-            <div className="max-w-3xl mx-auto space-y-8">
-              <div className="text-center">
-                <h2 className="text-2xl font-black text-forest-dark">Leaf Disease Diagnostic Scanner</h2>
-                <p className="text-xs text-forest-medium/60 mt-1">
-                  Upload leaf/crop pictures to get immediate treatment summaries or escalate to RSK officers.
-                </p>
-              </div>
-
-              {/* Upload Dropzone */}
-              <div className="w-full">
-                {scanStatus === "idle" && (
-                  <div
-                    onDragEnter={handleDrag}
-                    onDragOver={handleDrag}
-                    onDragLeave={handleDrag}
-                    onDrop={handleDrop}
-                    className={`w-full h-64 rounded-3xl border border-dashed flex flex-col items-center justify-center p-6 transition-all ${
-                      dragActive
-                        ? "border-forest-medium bg-forest-light/5 scale-[1.01]"
-                        : "border-forest-medium/15 bg-white hover:border-forest-light/35"
-                    }`}
-                  >
-                    <input
-                      type="file"
-                      id="leaf-upload"
-                      className="hidden"
-                      accept="image/*"
-                      onChange={handleFileChange}
-                    />
-                    <UploadCloud className="w-12 h-12 text-forest-medium/35 mb-4" />
-                    <p className="text-sm font-bold text-forest-dark">Drag leaf photo here, or click to browse</p>
-                    <p className="text-xs text-forest-medium/45 mt-1 font-semibold">Supports JPG, PNG up to 10MB</p>
-                    <label
-                      htmlFor="leaf-upload"
-                      className="mt-6 px-5 py-2.5 rounded-full bg-forest-medium hover:bg-forest-dark text-white text-xs font-bold cursor-pointer transition-all shadow-sm magnetic-btn"
-                    >
-                      Select leaf image
-                    </label>
-                  </div>
-                )}
-
-                {/* Scanning overlay */}
-                {scanStatus === "scanning" && (
-                  <div className="w-full h-64 rounded-[32px] bg-white border border-forest-medium/10 shadow-md flex flex-col items-center justify-center p-6 relative overflow-hidden">
-                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-google-blue via-ai-purple to-natural-green animate-[shimmer_2s_infinite]" />
-                    {scanningImage && (
-                      <div
-                        className="w-32 h-32 rounded-2xl bg-cover bg-center border border-forest-medium/10 mb-4 relative overflow-hidden"
-                        style={{ backgroundImage: `url(${scanningImage})` }}
-                      >
-                        <motion.div
-                          className="absolute left-0 w-full h-[3px] bg-natural-green shadow-[0_0_8px_#34A853]"
-                          animate={{ top: ["0%", "100%", "0%"] }}
-                          transition={{ repeat: Infinity, duration: 2, ease: "linear" }}
-                        />
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 text-forest-medium font-bold text-xs uppercase tracking-widest animate-pulse">
-                      <RefreshCw className="w-4 h-4 animate-spin text-forest-medium" />
-                      AI Multimodal Vision Scan Active...
-                    </div>
-                  </div>
-                )}
-
-                {/* Diagnostic Result */}
-                {scanStatus === "diagnosed" && diagnosticResult && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="p-6 rounded-[32px] bg-white border border-forest-medium/5 shadow-md space-y-6 text-left"
-                  >
-                    <div className="flex justify-between items-start gap-4 pb-4 border-b border-forest-medium/5">
-                      <div>
-                        <span className="text-[9px] font-bold px-2.5 py-0.5 rounded bg-amber-warning/10 text-amber-600 border border-amber-warning/20">
-                          DIAGNOSTIC SUMMARY
-                        </span>
-                        <h3 className="text-lg font-black text-forest-dark mt-1.5">{diagnosticResult.diseaseName}</h3>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-[10px] text-forest-medium/40 block font-bold">AI Confidence</span>
-                        <span className="text-sm font-extrabold text-danger-red block mt-0.5">
-                          {Math.round(diagnosticResult.confidence * 100)}% (Low Confidence)
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-4">
-                      <div>
-                        <span className="text-xs font-bold text-forest-dark block">Treatment Actions</span>
-                        <ul className="list-disc list-inside text-xs text-forest-medium/70 mt-1.5 space-y-1 font-medium">
-                          {diagnosticResult.treatment.map((t, idx) => (
-                            <li key={idx}>{t}</li>
-                          ))}
-                        </ul>
-                      </div>
-
-                      {/* Escalation Warning block */}
-                      <div className="p-4 rounded-2xl bg-danger-red/10 border border-danger-red/20 text-danger-900 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mt-6">
-                        <div className="flex items-center gap-3">
-                          <AlertTriangle className="w-6 h-6 text-danger-red shrink-0" />
-                          <div>
-                            <span className="text-xs font-bold block text-danger-red">AI Confidence below threshold (&lt;65%)</span>
-                            <span className="text-[10px] text-danger-900/80 block mt-0.5 font-medium">
-                              This case contains visual ambiguities. We recommend escalating to a physical RSK Officer.
-                            </span>
-                          </div>
-                        </div>
-                        <button
-                          onClick={escalateCase}
-                          className="px-4.5 py-2.5 rounded-full bg-danger-red hover:bg-danger-red/90 text-white text-xs font-bold transition-all shadow-sm shrink-0 w-full sm:w-auto"
-                        >
-                          Escalate to RSK
-                        </button>
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-
-                {/* Escalated state */}
-                {scanStatus === "escalated" && (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="p-8 rounded-[32px] bg-white border border-forest-medium/10 shadow-md text-center space-y-4 flex flex-col items-center"
-                  >
-                    <span className="p-4 rounded-full bg-natural-green/10 text-natural-green inline-block shadow-sm">
-                      <UserCheck className="w-8 h-8" />
-                    </span>
-                    <h3 className="text-lg font-black text-forest-dark">Case file Escalated successfully</h3>
-                    <p className="text-xs text-forest-medium/60 max-w-sm mx-auto leading-relaxed font-semibold">
-                      Your query, GPS coordinates, and photo have been transmitted to the nearest Rythu Seva Kendra (RSK) officer. You will receive an SMS alert when they reply.
-                    </p>
-                    <button
-                      onClick={() => {
-                        setScanStatus("idle");
-                        setScanningImage(null);
-                        setDiagnosticResult(null);
-                      }}
-                      className="px-5 py-2.5 rounded-full bg-forest-light/10 text-forest-medium text-xs font-bold hover:bg-forest-light/20 transition-all mt-4"
-                    >
-                      Scan another leaf
-                    </button>
-                  </motion.div>
-                )}
-              </div>
-            </div>
-          )}
-
           {activeTab === "chat" && (
             <div className="grid md:grid-cols-3 gap-8 items-start">
               {/* Chat Interface Column */}
               <div className="md:col-span-2 space-y-4">
-                <div className="p-6 rounded-[32px] bg-white border border-forest-medium/5 shadow-md h-[480px] flex flex-col justify-between">
+                <div className="p-6 rounded-[32px] bg-white border border-forest-medium/5 shadow-md h-[540px] flex flex-col justify-between">
                   {/* Messages list */}
-                  <div className="flex-1 overflow-y-auto space-y-4 pr-2 max-h-[380px]">
+                  <div className="flex-1 overflow-y-auto space-y-4 pr-2 max-h-[400px]">
                     {chatMessages.map((msg) => (
                       <div
                         key={msg.id}
-                        className={`flex flex-col max-w-[80%] ${
-                          msg.sender === "farmer" ? "ml-auto items-end" : "mr-auto items-start"
-                        }`}
+                        className={`flex flex-col max-w-[80%] ${msg.sender === "farmer" ? "ml-auto items-end" : "mr-auto items-start"
+                          }`}
                       >
                         <div
-                          className={`p-3.5 rounded-2xl text-xs font-semibold leading-relaxed text-left ${
-                            msg.sender === "farmer"
+                          className={`p-3.5 rounded-2xl text-xs font-semibold leading-relaxed text-left ${msg.sender === "farmer"
                               ? "bg-forest-medium text-white rounded-tr-none"
                               : "bg-forest-light/5 text-forest-dark border border-forest-medium/5 rounded-tl-none"
-                          }`}
+                            }`}
                         >
+                          {/* Inline image preview */}
+                          {msg.imageUrl && (
+                            <div className="mb-2">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={msg.imageUrl}
+                                alt="Uploaded leaf"
+                                className="w-full max-w-[200px] h-auto rounded-xl border border-white/20"
+                              />
+                            </div>
+                          )}
+
                           {msg.text}
+
                           {msg.translation && (
                             <span className="block text-[10px] opacity-75 border-t border-current/10 pt-1.5 mt-1.5 font-mono italic">
                               Translation: {msg.translation}
                             </span>
                           )}
+
+                          {/* WhatsApp platform indicator */}
+                          {msg.platform === "whatsapp" && (
+                            <span className="inline-flex items-center gap-1 text-[9px] opacity-60 mt-1.5">
+                              📱 via WhatsApp
+                            </span>
+                          )}
                         </div>
+
+                        {/* Inline Disease Diagnosis Card */}
+                        {msg.diseaseResult && (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="w-full mt-2.5 p-4 rounded-2xl bg-white border border-forest-medium/10 shadow-sm space-y-3 text-left"
+                          >
+                            <div className="flex justify-between items-start gap-3">
+                              <div>
+                                <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-warning/10 text-amber-600 border border-amber-warning/20">
+                                  DIAGNOSTIC RESULT
+                                </span>
+                                <h4 className="text-sm font-black text-forest-dark mt-1">{msg.diseaseResult.diseaseName}</h4>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <span className="text-[9px] text-forest-medium/40 block font-bold">Confidence</span>
+                                <span className="text-xs font-extrabold text-danger-red block">
+                                  {Math.round(msg.diseaseResult.confidence * 100)}%
+                                </span>
+                              </div>
+                            </div>
+
+                            <div>
+                              <span className="text-[10px] font-bold text-forest-dark block">Treatment Actions</span>
+                              <ul className="list-disc list-inside text-[11px] text-forest-medium/70 mt-1 space-y-0.5 font-medium">
+                                {msg.diseaseResult.treatment.map((t, idx) => (
+                                  <li key={idx}>{t}</li>
+                                ))}
+                              </ul>
+                            </div>
+
+                            {/* Escalation warning */}
+                            {msg.diseaseResult.confidence < 0.65 && (
+                              <div className="p-3 rounded-xl bg-danger-red/5 border border-danger-red/15 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                                <div className="flex items-center gap-2">
+                                  <AlertTriangle className="w-4 h-4 text-danger-red shrink-0" />
+                                  <span className="text-[10px] font-bold text-danger-red">
+                                    AI Confidence below 65% — RSK escalation recommended
+                                  </span>
+                                </div>
+                                <button
+                                  onClick={() => escalateFromChat(msg.diseaseResult)}
+                                  className="px-3 py-1.5 rounded-full bg-danger-red hover:bg-danger-red/90 text-white text-[10px] font-bold transition-all shadow-sm shrink-0"
+                                >
+                                  Escalate to RSK
+                                </button>
+                              </div>
+                            )}
+                          </motion.div>
+                        )}
 
                         {/* Inline AI Reasoning steps */}
                         {msg.reasoningSteps && (
@@ -833,7 +848,58 @@ export default function FarmerPortal() {
                         </span>
                       </div>
                     ))}
+
+                    {/* Scanning indicator */}
+                    {isScanning && (
+                      <div className="flex flex-col max-w-[80%] mr-auto items-start">
+                        <div className="p-3.5 rounded-2xl bg-forest-light/5 border border-forest-medium/5 rounded-tl-none">
+                          <div className="flex items-center gap-2 text-forest-medium font-bold text-[10px] uppercase tracking-widest">
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-forest-medium" />
+                            <span className="animate-pulse">AI Vision scanning leaf image...</span>
+                          </div>
+                          <div className="mt-2 h-1 w-32 rounded-full bg-forest-light/10 overflow-hidden">
+                            <motion.div
+                              className="h-full bg-gradient-to-r from-google-blue via-ai-purple to-natural-green rounded-full"
+                              animate={{ width: ["0%", "100%"] }}
+                              transition={{ duration: 2.5, ease: "easeInOut" }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div ref={chatEndRef} />
                   </div>
+
+                  {/* Pending image preview */}
+                  <AnimatePresence>
+                    {pendingImage && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 10 }}
+                        className="pt-3 flex items-center gap-3"
+                      >
+                        <div className="relative">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={pendingImage}
+                            alt="Pending upload"
+                            className="w-16 h-16 rounded-xl object-cover border-2 border-forest-light/30"
+                          />
+                          <button
+                            onClick={() => setPendingImage(null)}
+                            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-danger-red text-white flex items-center justify-center shadow-sm"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                        <span className="text-[10px] text-forest-medium/50 font-bold">
+                          📷 Leaf image ready — press Send to scan
+                        </span>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
 
                   {/* Input area */}
                   <div className="pt-4 border-t border-forest-medium/5 flex items-center gap-2 mt-4">
@@ -844,9 +910,26 @@ export default function FarmerPortal() {
                     >
                       <Mic className="w-4 h-4" />
                     </button>
+
+                    {/* Image upload button */}
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="p-3.5 rounded-full bg-forest-light/5 hover:bg-forest-light/10 text-forest-medium border border-forest-medium/10 transition-all shadow-sm"
+                      title="Upload leaf image for disease scan"
+                    >
+                      <ImagePlus className="w-4 h-4" />
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      onChange={handleImageSelect}
+                    />
+
                     <input
                       type="text"
-                      placeholder="Type query in Telugu or English..."
+                      placeholder="Type query or upload a leaf photo..."
                       value={inputVal}
                       onChange={(e) => setInputVal(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleSendText()}
@@ -871,7 +954,7 @@ export default function FarmerPortal() {
                     <Sparkles className="w-8 h-8 text-ai-purple mx-auto animate-pulse" />
                     <p className="text-xs font-bold">AI Pipeline status: Idle</p>
                     <p className="text-[10px] text-forest-medium/40 max-w-[200px] mx-auto leading-relaxed font-semibold">
-                      Use the microphone button and complete a simulated audio query to see the real-time AI reasoning.
+                      Use the microphone or upload a leaf image to see the real-time AI reasoning pipeline.
                     </p>
                   </div>
                 )}
@@ -905,6 +988,16 @@ export default function FarmerPortal() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Platform Selection Modal (first-time visitors) */}
+      {hasCheckedPlatform && (
+        <PlatformSelectionModal
+          isOpen={showPlatformModal}
+          onSelectWebsite={handleSelectWebsite}
+          onSelectWhatsApp={handleSelectWhatsApp}
+          onClose={handleSelectWebsite}
+        />
+      )}
     </div>
   );
 }
