@@ -12,8 +12,6 @@ import {
   User,
   ArrowLeft,
   Send,
-  ImageIcon,
-  AlertTriangle,
   ShieldCheck,
 } from "lucide-react";
 import Link from "next/link";
@@ -41,8 +39,6 @@ export default function RSKOfficerPortal() {
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [selectedCaseChat, setSelectedCaseChat] = useState<any[]>([]);
   const [isLoadingChat, setIsLoadingChat] = useState(false);
-  const [imageLoading, setImageLoading] = useState(true);
-  const [imageError, setImageError] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const previousUserIdRef = useRef<string | null>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -121,11 +117,7 @@ export default function RSKOfficerPortal() {
     }
   }, [selectedCaseChat.length]);
 
-  // Reset image loading/error states when case changes
-  useEffect(() => {
-    setImageLoading(true);
-    setImageError(false);
-  }, [selectedCase?.farmerImage]);
+
 
   const fetchChatHistory = async (caseUserId: string) => {
     if (isLoadingChat) return;
@@ -514,7 +506,7 @@ export default function RSKOfficerPortal() {
                 {/* Visual Overview */}
                 <div
                   className="w-full h-44 rounded-2xl bg-cover bg-center border border-slate-200 relative overflow-hidden shadow-md"
-                  style={{ backgroundImage: `url(${selectedCase.image})` }}
+                  style={{ backgroundImage: `url(${selectedCase.farmerImage || selectedCase.image})` }}
                 >
                   <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
                   <div className="absolute bottom-3 left-3 text-left">
@@ -555,32 +547,7 @@ export default function RSKOfficerPortal() {
                     </p>
                   </div>
 
-                  {/* Farmer-uploaded image if available */}
-                  {selectedCase.farmerImage && (
-                    <div className="space-y-2">
-                      <span className="text-[9px] text-slate-400 block uppercase font-bold">Farmer-Uploaded Image</span>
-                      {imageLoading && (
-                        <div className="w-full h-48 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center animate-pulse">
-                          <ImageIcon className="w-8 h-8 text-slate-300" />
-                        </div>
-                      )}
-                      {imageError && (
-                        <div className="w-full h-48 rounded-2xl bg-red-50 border border-red-200 flex flex-col items-center justify-center gap-2 text-red-400">
-                          <AlertTriangle className="w-6 h-6" />
-                          <span className="text-[10px] font-bold">Image failed to load</span>
-                        </div>
-                      )}
-                      <img
-                        key={selectedCase.farmerImage}
-                        src={selectedCase.farmerImage}
-                        alt="Farmer uploaded crop image"
-                        className={`w-full rounded-2xl object-cover max-h-48 border border-slate-200 shadow-sm ${imageLoading ? 'hidden' : 'block'}`}
-                        onLoad={() => setImageLoading(false)}
-                        onError={() => { setImageLoading(false); setImageError(true); }}
-                        loading="lazy"
-                      />
-                    </div>
-                  )}
+
 
                   {/* Conversation History Log — admin only */}
                   {isAdmin && (

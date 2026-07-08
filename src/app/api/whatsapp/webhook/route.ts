@@ -248,18 +248,8 @@ export async function POST(request: NextRequest) {
           const mime = imgRes.headers.get("content-type") || "image/jpeg";
           imageBase64 = { mimeType: mime, data: buffer.toString("base64") };
 
-          // Save image permanently to public/uploads/ (avoids Twilio URL expiry)
-          const ext = mime.split("/")[1] || "jpg";
-          const imageId = `img_${Date.now()}`;
-          const fs = await import("fs");
-          const path = await import("path");
-          const uploadDir = path.join(process.cwd(), "public", "uploads");
-          fs.mkdirSync(uploadDir, { recursive: true });
-          fs.writeFileSync(path.join(uploadDir, `${imageId}.${ext}`), buffer);
-
-          const host = process.env.NEXT_PUBLIC_BASE_URL || request.headers.get("host") || "localhost:3000";
-          const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
-          persistentImageUrl = `${protocol}://${host}/uploads/${imageId}.${ext}`;
+          // Store as base64 data URI — works on ephemeral filesystems (Railway)
+          persistentImageUrl = `data:${mime};base64,${buffer.toString("base64")}`;
         }
       } catch (err) {
         console.error("Failed to fetch image for vision analysis:", err);
