@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { uid, email, displayName, photoURL, phone, language } = body;
+    const { uid, email, displayName, photoURL, phone, language, coordinates } = body;
 
     if (!uid) {
       return NextResponse.json({ error: "Missing uid" }, { status: 400 });
@@ -47,6 +47,7 @@ export async function POST(request: NextRequest) {
     if (displayName !== undefined) profileData.displayName = displayName;
     if (photoURL !== undefined) profileData.photoURL = photoURL;
     if (language !== undefined) profileData.language = language;
+    if (coordinates !== undefined) profileData.coordinates = coordinates;
 
     if (phone) {
       const cleanPhone = phone.replace("+", "").replace(/\s+/g, "").trim();

@@ -651,6 +651,12 @@ export default function FarmerPortal() {
           };
           setCoordinates(coords);
           fetchWeatherAndCrops(coords.latitude, coords.longitude);
+          
+          // If user is already logged in, sync coordinates to Firestore
+          const currentUser = auth.currentUser;
+          if (currentUser) {
+            syncUserProfile(currentUser.uid, currentUser.email || "", currentUser.displayName || "", currentUser.photoURL || "", undefined, coords);
+          }
         },
         (err) => {
           console.warn("Geolocation access denied or timed out:", err);
@@ -685,8 +691,8 @@ export default function FarmerPortal() {
         setUserId(currentUser.uid);
         loadChatHistory(currentUser.uid);
         
-        // Sync profile to database
-        await syncUserProfile(currentUser.uid, currentUser.email || "", currentUser.displayName || "", currentUser.photoURL || "");
+        // Sync profile to database with any coordinates we already resolved
+        await syncUserProfile(currentUser.uid, currentUser.email || "", currentUser.displayName || "", currentUser.photoURL || "", undefined, coordinates);
       } else {
         setFirebaseUser(null);
         setUserProfile(null);
@@ -700,12 +706,12 @@ export default function FarmerPortal() {
     return () => unsubscribe();
   }, []);
 
-  const syncUserProfile = async (uid: string, email: string, displayName: string, photoURL: string, phone?: string) => {
+  const syncUserProfile = async (uid: string, email: string, displayName: string, photoURL: string, phone?: string, coords?: { latitude: number; longitude: number } | null) => {
     try {
       const res = await fetch("/api/user/profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid, email, displayName, photoURL, phone }),
+        body: JSON.stringify({ uid, email, displayName, photoURL, phone, coordinates: coords }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -1584,6 +1590,12 @@ export default function FarmerPortal() {
                               };
                               setCoordinates(coords);
                               fetchWeatherAndCrops(coords.latitude, coords.longitude);
+                              
+                              // If user is already logged in, sync coordinates to Firestore
+                              const currentUser = auth.currentUser;
+                              if (currentUser) {
+                                syncUserProfile(currentUser.uid, currentUser.email || "", currentUser.displayName || "", currentUser.photoURL || "", undefined, coords);
+                              }
                             },
                             (err) => {
                               alert("Location access denied. Please enable location permissions in your browser settings to continue.");
