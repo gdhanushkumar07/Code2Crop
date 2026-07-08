@@ -15,12 +15,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const snapshot = await db
-      .collection("chats")
-      .doc(userId)
-      .collection("messages")
-      .orderBy("createdAt", "asc")
-      .get();
+    let query = db.collection("chats").doc(userId).collection("messages");
+    const platform = searchParams.get("platform");
+
+    if (platform) {
+      query = query.where("platform", "==", platform) as any;
+    }
+
+    const snapshot = await query.get();
 
     const messages = snapshot.docs.map((doc: any) => {
       const data = doc.data();
@@ -35,7 +37,15 @@ export async function GET(request: NextRequest) {
         imageUrl: data.imageUrl || undefined,
         diseaseResult: data.diseaseResult || undefined,
         platform: data.platform || "web",
+        createdAt: data.createdAt,
       };
+    });
+
+    // Sort in-memory to prevent Firestore index requirements
+    messages.sort((a: any, b: any) => {
+      const timeA = typeof a.createdAt === "number" ? a.createdAt : new Date(a.createdAt || 0).getTime();
+      const timeB = typeof b.createdAt === "number" ? b.createdAt : new Date(b.createdAt || 0).getTime();
+      return timeA - timeB;
     });
 
     return NextResponse.json({ messages });

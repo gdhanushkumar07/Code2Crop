@@ -1,21 +1,25 @@
 "use client";
 
-import React, { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Layers, MapPin, AlertTriangle, Droplets, Grid, Eye, Search, Navigation } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { Layers, AlertTriangle, Droplets, Grid, MapPin } from "lucide-react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 export interface MapCase {
   id: string;
+  userId?: string | null;
   farmerName: string;
   village: string;
   crop: string;
   issue: string;
   severity: "high" | "medium" | "low";
-  lat: number; 
-  lng: number; 
+  lat: number | null; 
+  lng: number | null; 
   confidence: number;
   image: string;
+  farmerImage?: string | null;
   description: string;
+  createdAt?: number;
 }
 
 interface MapContainerProps {
@@ -32,15 +36,201 @@ export default function MapContainer({
   isDarkTheme = true,
 }: MapContainerProps) {
   const [mapLayer, setMapLayer] = useState<"satellite" | "hotspot" | "water">("hotspot");
-  const [hoveredCase, setHoveredCase] = useState<MapCase | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
+  
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<L.Map | null>(null);
+  const markersRef = useRef<Record<string, L.Marker>>({});
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
 
-  const filteredCases = cases.filter(
-    (c) =>
-      c.farmerName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.village.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.issue.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Initialize Map
+  useEffect(() => {
+    if (typeof window === "undefined" || !mapContainerRef.current) return;
+
+    if (!mapInstanceRef.current) {
+      // Default center around Karimnagar, Telangana, India
+      const map = L.map(mapContainerRef.current, {
+        zoomControl: true,
+        scrollWheelZoom: true,
+      }).setView([18.4386, 79.1288], 9);
+
+      // Add CartoDB Dark Matter tile layer by default for dark dashboard
+      const tileUrl = isDarkTheme
+        ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+
+      const tiles = L.tileLayer(tileUrl, {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      }).addTo(map);
+
+      mapInstanceRef.current = map;
+      tileLayerRef.current = tiles;
+    }
+
+    return () => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+    };
+  }, []);
+
+  // Update map tile layer style dynamically when mapLayer toggle is clicked
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    // Remove existing tile layer
+    if (tileLayerRef.current) {
+      tileLayerRef.current.remove();
+      tileLayerRef.current = null;
+    }
+
+    let tileUrl = "";
+    let maxZoom = 19;
+    let maxNativeZoom = 19;
+    let attribution = "";
+
+    if (mapLayer === "satellite") {
+      tileUrl = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+      maxZoom = 18;
+      maxNativeZoom = 18;
+      attribution = "Tiles &copy; Esri &mdash; Source: USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community";
+    } else if (mapLayer === "water") {
+      tileUrl = "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png";
+      maxZoom = 16;
+      maxNativeZoom = 16;
+      attribution = 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a>';
+    } else {
+      tileUrl = isDarkTheme
+        ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+      maxZoom = 19;
+      maxNativeZoom = 19;
+      attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+    }
+
+    const tiles = L.tileLayer(tileUrl, {
+      maxZoom: 19,
+      maxNativeZoom: maxNativeZoom,
+      attribution: attribution,
+    }).addTo(map);
+
+    tileLayerRef.current = tiles;
+
+    // Safety zoom check: zoom out to fit layer limits if map zoom is currently too close
+    if (map.getZoom() > maxZoom) {
+      map.setZoom(maxZoom);
+    }
+  }, [mapLayer, isDarkTheme]);
+
+  // Sync markers on coordinates / cases change
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    // Clean existing markers
+    Object.values(markersRef.current).forEach((m) => m.remove());
+    markersRef.current = {};
+
+    // Map null lat/lng to pseudorandom consistent coordinates around Karimnagar district
+    const validCases = cases.map((c) => {
+      if (c.lat === null || c.lng === null || isNaN(c.lat) || isNaN(c.lng)) {
+        // Seeded pseudo-random coordinates based on case ID character values
+        const charSum = c.id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+        const seedOffsetLat = ((charSum % 100) / 100) * 0.16 - 0.08;
+        const seedOffsetLng = (((charSum >> 2) % 100) / 100) * 0.16 - 0.08;
+        return {
+          ...c,
+          lat: 18.4386 + seedOffsetLat,
+          lng: 79.1288 + seedOffsetLng,
+        };
+      }
+      return c;
+    });
+
+    validCases.forEach((c) => {
+      const lat = c.lat as number;
+      const lng = c.lng as number;
+      const isSelected = selectedCaseId === c.id;
+
+      // Color coding depending on severity
+      const color = c.severity === "high" ? "#EA4335" : c.severity === "medium" ? "#FBBC05" : "#34A853";
+      const size = isSelected ? 40 : 30;
+      const border = isSelected ? "stroke='#4285F4' stroke-width='3'" : "stroke='#ffffff' stroke-width='1.5'";
+
+      // Generate custom HTML marker wrapper
+      const customIcon = L.divIcon({
+        html: `
+          <div class="relative flex items-center justify-center" style="width: ${size}px; height: ${size}px;">
+            ${c.severity === "high" || isSelected ? `
+              <div class="absolute inset-0 rounded-full animate-ping opacity-25" style="background-color: ${color}; width: ${size * 1.5}px; height: ${size * 1.5}px; transform: translate(-16%, -16%);"></div>
+            ` : ""}
+            <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 2C8.13 2 5 5.13 5 9C5 14.25 12 22 12 22C12 22 19 14.25 19 9C19 5.13 15.87 2 12 2ZM12 11.5C10.62 11.5 9.5 10.38 9.5 9C9.5 7.62 10.62 6.5 12 6.5C13.38 6.5 14.5 7.62 14.5 9C14.5 10.38 13.38 11.5 12 11.5Z" fill="${color}" ${border}/>
+            </svg>
+          </div>
+        `,
+        className: "custom-leaflet-marker",
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size],
+      });
+
+      const marker = L.marker([lat, lng], { icon: customIcon }).addTo(map);
+
+      // Bind custom styled dark popup info on click with autoPan: false to keep marker in center
+      marker.bindPopup(`
+        <div class="custom-popup-content">
+          <h4>${c.farmerName}</h4>
+          <div class="popup-meta">
+            <span>Crop: <strong>${c.crop}</strong></span>
+            <span class="severity-badge" style="background-color: ${color}20; color: ${color}; border: 1px solid ${color}35;">
+              ${c.severity.toUpperCase()}
+            </span>
+          </div>
+          <p class="popup-issue">${c.issue}</p>
+        </div>
+      `, { autoPan: false });
+
+      marker.on("click", () => {
+        if (onSelectCase) onSelectCase(c);
+      });
+
+      markersRef.current[c.id] = marker;
+    });
+
+  }, [cases, selectedCaseId]);
+
+  // Zoom / Focus on selected case when changed in sidebar
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !selectedCaseId) return;
+
+    const caseObj = cases.find((c) => c.id === selectedCaseId);
+    if (caseObj) {
+      let lat = caseObj.lat;
+      let lng = caseObj.lng;
+      if (lat === null || lng === null || isNaN(lat) || isNaN(lng)) {
+        // Resolve pseudo-random coordinate fallback consistently
+        const charSum = caseObj.id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+        const seedOffsetLat = ((charSum % 100) / 100) * 0.16 - 0.08;
+        const seedOffsetLng = (((charSum >> 2) % 100) / 100) * 0.16 - 0.08;
+        lat = 18.4386 + seedOffsetLat;
+        lng = 79.1288 + seedOffsetLng;
+      }
+
+      map.setView([lat, lng], 16, {
+        animate: true,
+        duration: 1.0,
+      });
+
+      // Auto-open marker popup details
+      const marker = markersRef.current[selectedCaseId];
+      if (marker) {
+        marker.openPopup();
+      }
+    }
+  }, [selectedCaseId, cases]);
 
   return (
     <div
@@ -50,115 +240,65 @@ export default function MapContainer({
           : "bg-white border-forest-medium/10 text-forest-dark"
       }`}
     >
-      {/* Background simulated telemetry layer */}
-      <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
-        
-        {/* Layer: Satellite Mode */}
-        {mapLayer === "satellite" && (
-          <div className="w-full h-full relative opacity-90">
-            <div
-              className="absolute inset-0 bg-cover bg-center transition-all duration-700"
-              style={{
-                backgroundImage: `url('https://images.unsplash.com/photo-1524661135-423995f22d0b?auto=format&fit=crop&w=1200&q=80')`,
-                filter: isDarkTheme ? "brightness(0.3) contrast(1.25) saturate(0.9)" : "brightness(0.9) saturate(1.1)",
-              }}
-            />
-            {/* HUD Grid Overlay */}
-            <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.015)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:40px_40px]" />
-          </div>
-        )}
+      {/* CSS Styles Overrides for Leaflet Popups */}
+      <style dangerouslySetInnerHTML={{ __html: `
+        .leaflet-popup-content-wrapper {
+          background: ${isDarkTheme ? "#090b0e" : "#ffffff"} !important;
+          color: ${isDarkTheme ? "#f8fafc" : "#0f172a"} !important;
+          border-radius: 20px !important;
+          border: 1px solid ${isDarkTheme ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.08)"} !important;
+          padding: 12px 14px !important;
+          box-shadow: 0 20px 25px -5px rgba(0, 0, 0, ${isDarkTheme ? "0.7" : "0.15"}) !important;
+        }
+        .leaflet-popup-content {
+          margin: 0 !important;
+          font-family: inherit !important;
+        }
+        .leaflet-popup-tip {
+          background: ${isDarkTheme ? "#090b0e" : "#ffffff"} !important;
+          border: 1px solid ${isDarkTheme ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.08)"} !important;
+        }
+        .leaflet-popup-close-button {
+          color: ${isDarkTheme ? "#94a3b8" : "#64748b"} !important;
+          top: 8px !important;
+          right: 8px !important;
+        }
+        .custom-popup-content h4 {
+          margin: 0 0 6px 0 !important;
+          font-size: 13px !important;
+          font-weight: 800 !important;
+          color: ${isDarkTheme ? "#ffffff" : "#0f172a"} !important;
+        }
+        .custom-popup-content .popup-meta {
+          display: flex !important;
+          align-items: center !important;
+          gap: 8px !important;
+          font-size: 10px !important;
+          color: ${isDarkTheme ? "#94a3b8" : "#64748b"} !important;
+          margin-bottom: 8px !important;
+        }
+        .custom-popup-content .severity-badge {
+          font-size: 9px !important;
+          font-weight: 800 !important;
+          padding: 1px 6px !important;
+          border-radius: 4px !important;
+          text-transform: uppercase !important;
+        }
+        .custom-popup-content .popup-issue {
+          margin: 6px 0 0 0 !important;
+          font-size: 11px !important;
+          color: ${isDarkTheme ? "#cbd5e1" : "#334155"} !important;
+          line-height: 1.45 !important;
+          border-top: 1px solid ${isDarkTheme ? "rgba(255, 255, 255, 0.05)" : "rgba(0, 0, 0, 0.05)"} !important;
+          padding-top: 6px !important;
+        }
+      `}} />
 
-        {/* Layer: Hotspot heatmap contours */}
-        {mapLayer === "hotspot" && (
-          <div className={`w-full h-full relative transition-all duration-700 ${isDarkTheme ? "bg-[#090b0e]" : "bg-[#f8f9fa]"}`}>
-            {/* Topographic line traces */}
-            <svg width="100%" height="100%" className="opacity-20 absolute inset-0">
-              <path
-                d="M 0 100 C 150 150 250 50 400 150 C 550 250 650 100 800 200 C 950 300 1100 200 1200 250"
-                fill="none"
-                stroke={isDarkTheme ? "rgba(255,255,255,0.05)" : "rgba(28,63,36,0.05)"}
-                strokeWidth="1.5"
-              />
-              <path
-                d="M 0 250 C 200 300 350 150 500 280 C 650 410 800 220 950 350 C 1100 480 1150 300 1200 320"
-                fill="none"
-                stroke={isDarkTheme ? "rgba(255,255,255,0.06)" : "rgba(28,63,36,0.06)"}
-                strokeWidth="2"
-              />
-              <path
-                d="M 0 450 C 300 350 500 480 800 380 C 1100 280 1150 500 1200 460"
-                fill="none"
-                stroke={isDarkTheme ? "rgba(255,255,255,0.04)" : "rgba(28,63,36,0.04)"}
-                strokeWidth="1"
-              />
-              
-              {/* Heatmap rings */}
-              {cases.map((c, i) => (
-                <g key={i}>
-                  <circle
-                    cx={`${c.lat}%`}
-                    cy={`${c.lng}%`}
-                    r={c.severity === "high" ? "75" : "45"}
-                    fill={c.severity === "high" ? "rgba(234, 67, 53, 0.08)" : "rgba(251, 188, 5, 0.05)"}
-                    className="animate-pulse"
-                    style={{ animationDuration: `${3.5 + i * 0.5}s` }}
-                  />
-                  <circle
-                    cx={`${c.lat}%`}
-                    cy={`${c.lng}%`}
-                    r={c.severity === "high" ? "120" : "75"}
-                    fill={c.severity === "high" ? "rgba(234, 67, 53, 0.03)" : "rgba(251, 188, 5, 0.02)"}
-                    className="animate-pulse"
-                    style={{ animationDuration: `${5 + i * 0.5}s` }}
-                  />
-                </g>
-              ))}
-            </svg>
-            <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.01)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.01)_1px,transparent_1px)] bg-[size:28px_28px]" />
-          </div>
-        )}
-
-        {/* Layer: Water stress grid */}
-        {mapLayer === "water" && (
-          <div className={`w-full h-full relative transition-all duration-700 ${isDarkTheme ? "bg-[#07090c]" : "bg-[#f4f6f8]"}`}>
-            <svg width="100%" height="100%" className="opacity-35">
-              <ellipse cx="35%" cy="30%" rx="220" ry="140" fill="rgba(234, 67, 53, 0.05)" /> 
-              <ellipse cx="80%" cy="55%" rx="280" ry="180" fill="rgba(26, 115, 232, 0.06)" />
-              <path
-                d="M 0 200 Q 300 100 600 300 T 1200 200"
-                fill="none"
-                stroke="rgba(26, 115, 232, 0.12)"
-                strokeWidth="3.5"
-                strokeDasharray="8 8"
-              />
-            </svg>
-            <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.008)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.008)_1px,transparent_1px)] bg-[size:48px_48px]" />
-          </div>
-        )}
-      </div>
-
-      {/* Floating Control: Search Bar */}
-      <div className="absolute top-6 left-6 z-10 w-72 max-w-full">
-        <div
-          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-2xl shadow-xl border transition-all ${
-            isDarkTheme
-              ? "bg-slate-900/85 backdrop-blur-xl border-white/10"
-              : "bg-white/90 backdrop-blur-xl border-forest-medium/10"
-          }`}
-        >
-          <Search className="w-4 h-4 text-forest-medium/55" />
-          <input
-            type="text"
-            placeholder="Search village records..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full text-xs bg-transparent border-none outline-none font-bold placeholder:text-forest-medium/35"
-          />
-        </div>
-      </div>
+      {/* Real map mount div */}
+      <div ref={mapContainerRef} className="absolute inset-0 z-0 w-full h-full" />
 
       {/* Floating Control: Layers */}
-      <div className="absolute top-6 right-6 z-10">
+      <div className="absolute top-6 right-6 z-[1000]">
         <div
           className={`flex gap-1.5 p-1 rounded-2xl shadow-xl border backdrop-blur-xl ${
             isDarkTheme ? "bg-slate-900/85 border-white/10" : "bg-white/90 border-forest-medium/10"
@@ -186,7 +326,7 @@ export default function MapContainer({
                   : "bg-forest-medium text-white"
                 : "text-forest-medium/50 hover:bg-forest-light/10"
             }`}
-            title="Satellite NDVI Mode"
+            title="Satellite Imagery"
           >
             <Layers className="w-4 h-4" />
           </button>
@@ -199,126 +339,16 @@ export default function MapContainer({
                   : "bg-forest-medium text-white"
                 : "text-forest-medium/50 hover:bg-forest-light/10"
             }`}
-            title="Water Stress Index"
+            title="Topographical Relief"
           >
             <Droplets className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* Map Pins */}
-      <div className="absolute inset-0 z-5 pointer-events-auto">
-        {filteredCases.map((c) => {
-          const isSelected = selectedCaseId === c.id;
-          const severityColors =
-            c.severity === "high"
-              ? "bg-danger-red text-white"
-              : c.severity === "medium"
-              ? "bg-amber-warning text-forest-dark"
-              : "bg-natural-green text-white";
-
-          return (
-            <div
-              key={c.id}
-              className="absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer"
-              style={{ left: `${c.lat}%`, top: `${c.lng}%` }}
-              onClick={() => onSelectCase && onSelectCase(c)}
-              onMouseEnter={() => setHoveredCase(c)}
-              onMouseLeave={() => setHoveredCase(null)}
-            >
-              {/* Double concentric pulsing glow rings */}
-              <AnimatePresence>
-                {(isSelected || c.severity === "high") && (
-                  <>
-                    <motion.div
-                      className={`absolute inset-0 w-10 h-10 -left-3 -top-3 rounded-full opacity-35 ${
-                        c.severity === "high" ? "bg-danger-red" : "bg-google-blue"
-                      }`}
-                      initial={{ scale: 0.7, opacity: 0.6 }}
-                      animate={{ scale: [1, 2.2, 1], opacity: [0.6, 0.05, 0.6] }}
-                      transition={{ repeat: Infinity, duration: 2.5 }}
-                    />
-                    <motion.div
-                      className={`absolute inset-0 w-6 h-6 -left-1 -top-1 rounded-full opacity-40 ${
-                        c.severity === "high" ? "bg-danger-red" : "bg-google-blue"
-                      }`}
-                      initial={{ scale: 0.8, opacity: 0.5 }}
-                      animate={{ scale: [1, 1.6, 1], opacity: [0.5, 0.1, 0.5] }}
-                      transition={{ repeat: Infinity, duration: 1.8, delay: 0.4 }}
-                    />
-                  </>
-                )}
-              </AnimatePresence>
-
-              {/* Central Pin */}
-              <motion.div
-                whileHover={{ scale: 1.18, rotate: 10 }}
-                className={`relative z-10 p-2 rounded-2xl shadow-xl flex items-center justify-center transition-all ${
-                  isSelected
-                    ? "bg-google-blue text-white scale-110 shadow-google-blue/20"
-                    : severityColors
-                }`}
-              >
-                {c.severity === "high" ? (
-                  <AlertTriangle className="w-4 h-4" />
-                ) : (
-                  <MapPin className="w-4 h-4" />
-                )}
-              </motion.div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Floating Info Overlays on hover */}
-      <AnimatePresence>
-        {hoveredCase && (
-          <motion.div
-            initial={{ opacity: 0, y: 12, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 12, scale: 0.96 }}
-            className={`absolute bottom-6 left-6 z-20 w-80 p-4 rounded-3xl shadow-2xl border flex gap-3.5 ${
-              isDarkTheme
-                ? "bg-slate-900/95 backdrop-blur-2xl border-white/10 text-white"
-                : "bg-white/95 backdrop-blur-2xl border-forest-medium/10 text-forest-dark"
-            }`}
-          >
-            <div
-              className="w-16 h-16 rounded-2xl bg-cover bg-center border border-white/10 shrink-0"
-              style={{ backgroundImage: `url(${hoveredCase.image})` }}
-            />
-            <div className="flex-1 min-w-0">
-              <div className="flex justify-between items-start gap-1">
-                <h4 className="text-xs font-black truncate">{hoveredCase.farmerName}</h4>
-                <span
-                  className={`text-[9px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
-                    hoveredCase.severity === "high"
-                      ? "bg-danger-red/10 text-danger-red border border-danger-red/20"
-                      : "bg-amber-warning/10 text-amber-600 border border-amber-warning/20"
-                  }`}
-                >
-                  {hoveredCase.severity.toUpperCase()}
-                </span>
-              </div>
-              <p className="text-[10px] text-forest-medium/55 truncate mt-0.5 font-semibold">
-                {hoveredCase.village} • {hoveredCase.crop}
-              </p>
-              <p className="text-[11px] font-medium text-forest-medium/85 mt-1 line-clamp-2">
-                {hoveredCase.issue}
-              </p>
-              <div className="flex items-center gap-1.5 mt-2">
-                <span className="text-[9px] px-2 py-0.5 rounded-full bg-forest-light/10 text-forest-medium font-bold">
-                  AI Match: {Math.round(hoveredCase.confidence * 100)}%
-                </span>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Legend */}
       <div
-        className={`absolute bottom-6 right-6 z-10 px-4 py-3 rounded-2xl border text-[10px] shadow-lg backdrop-blur-xl ${
+        className={`absolute bottom-6 right-6 z-[1000] px-4 py-3 rounded-2xl border text-[10px] shadow-lg backdrop-blur-xl ${
           isDarkTheme ? "bg-slate-900/80 border-white/10" : "bg-white/80 border-forest-medium/10"
         }`}
       >
@@ -332,8 +362,8 @@ export default function MapContainer({
             <span className="text-[9px]">Medium Severity Cases</span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="w-3 h-1 bg-google-blue shrink-0" />
-            <span className="text-[9px]">Command Boundary Limits</span>
+            <span className="w-2.5 h-2.5 rounded-full bg-natural-green shrink-0" />
+            <span className="text-[9px]">Low Severity Cases</span>
           </div>
         </div>
       </div>

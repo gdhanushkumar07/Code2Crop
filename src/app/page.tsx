@@ -27,9 +27,13 @@ import {
   Cpu,
   Mic,
   BrainCircuit,
+  LogOut,
+  User,
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import AIPipeline from "@/components/ai/AIPipeline";
+import { auth, signOut } from "@/lib/firebaseClient";
+import { onAuthStateChanged } from "firebase/auth";
 
 // Mock weather telemetry for landing widget
 const HERO_WEATHER_DATA = [
@@ -53,11 +57,19 @@ interface CapabilityNode {
 }
 
 export default function Home() {
+  const [firebaseUser, setFirebaseUser] = useState<any>(null);
   const [activeSatLayer, setActiveSatLayer] = useState<"ndvi" | "moisture" | "outbreak">("ndvi");
   const [demoScanActive, setDemoScanActive] = useState(false);
   const [demoScanStep, setDemoScanStep] = useState<"idle" | "scanning" | "done">("idle");
   const [isScrolled, setIsScrolled] = useState(false);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setFirebaseUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
 
   // Monitor scroll height to shrink pill navbar
   useEffect(() => {
@@ -223,13 +235,45 @@ export default function Home() {
           </nav>
 
           {/* Action CTAs (Right-aligned) */}
-          <div className="flex items-center gap-2.5 shrink-0">
-            <Link
-              href="/farmer"
-              className="text-[11px] font-bold px-3.5 py-2 rounded-full text-forest-medium hover:bg-forest-light/5 transition-all"
-            >
-              Farmer Portal
-            </Link>
+          <div className="flex items-center gap-3 shrink-0">
+            {firebaseUser ? (
+              <div className="flex items-center gap-3">
+                <Link
+                  href="/farmer"
+                  className="text-[11px] font-bold px-4 py-2 rounded-full text-white bg-forest-medium hover:bg-forest-dark transition-all"
+                >
+                  Dashboard
+                </Link>
+                {/* Immersive Google Account profile dropdown bubble */}
+                <div className="relative group">
+                  <img
+                    src={firebaseUser.photoURL || "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y"}
+                    alt="Farmer profile avatar"
+                    className="w-8 h-8 rounded-full border-2 border-forest-medium/15 cursor-pointer shadow-sm active:scale-95 transition-transform"
+                  />
+                  <div className="absolute right-0 mt-2.5 w-52 rounded-2xl bg-white border border-forest-medium/10 shadow-xl py-3 z-50 hidden group-hover:block text-left animate-in fade-in slide-in-from-top-2 duration-200">
+                    <div className="px-4 py-2 border-b border-forest-medium/5">
+                      <span className="text-[10px] font-bold text-forest-medium/40 uppercase block tracking-wider">Signed in as</span>
+                      <span className="text-xs font-black text-forest-dark block truncate">{firebaseUser.displayName || "Farmer"}</span>
+                      <span className="text-[10px] text-forest-medium/60 block truncate">{firebaseUser.email}</span>
+                    </div>
+                    <button
+                      onClick={() => signOut(auth)}
+                      className="w-full text-left px-4 py-2 text-xs font-bold text-danger-red hover:bg-forest-light/5 transition-colors mt-2 flex items-center gap-1.5"
+                    >
+                      <LogOut className="w-3.5 h-3.5" /> Sign Out
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <Link
+                href="/farmer?select=true"
+                className="text-[11px] font-bold px-3.5 py-2 rounded-full text-forest-medium hover:bg-forest-light/5 transition-all"
+              >
+                Login/Signup
+              </Link>
+            )}
             <Link
               href="/rsk"
               className="text-[11px] font-bold px-4 py-2.5 rounded-full text-white bg-forest-medium hover:bg-forest-dark shadow-md hover:shadow-xl hover:shadow-forest-medium/10 transition-all magnetic-btn"
@@ -277,13 +321,23 @@ export default function Home() {
             variants={itemVariants}
             className="flex flex-wrap gap-4 pt-4"
           >
-            <Link
-              href="/farmer"
-              className="group flex items-center gap-2 px-6.5 py-4 rounded-full text-xs font-bold text-white bg-gradient-to-r from-forest-medium to-forest-light shadow-lg shadow-forest-medium/10 hover:shadow-xl hover:shadow-forest-medium/20 transition-all magnetic-btn"
-            >
-              Access Farmer Home
-              <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
-            </Link>
+            {firebaseUser ? (
+              <Link
+                href="/farmer"
+                className="group flex items-center gap-2 px-6.5 py-4 rounded-full text-xs font-bold text-white bg-gradient-to-r from-forest-medium to-forest-light shadow-lg shadow-forest-medium/10 hover:shadow-xl hover:shadow-forest-medium/20 transition-all magnetic-btn"
+              >
+                Go to Dashboard
+                <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+              </Link>
+            ) : (
+              <Link
+                href="/farmer?select=true"
+                className="group flex items-center gap-2 px-6.5 py-4 rounded-full text-xs font-bold text-white bg-gradient-to-r from-forest-medium to-forest-light shadow-lg shadow-forest-medium/10 hover:shadow-xl hover:shadow-forest-medium/20 transition-all magnetic-btn"
+              >
+                Login/Signup
+                <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+              </Link>
+            )}
             <Link
               href="/rsk"
               className="flex items-center gap-2 px-6.5 py-4 rounded-full text-xs font-bold text-forest-dark bg-white border border-forest-medium/15 hover:bg-forest-light/5 shadow-sm transition-all"

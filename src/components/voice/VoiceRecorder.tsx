@@ -2,36 +2,53 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Mic, MicOff, Volume2, Globe, Sparkles, Check, ChevronDown } from "lucide-react";
+import { Mic, MicOff, Volume2, Globe, Sparkles } from "lucide-react";
 
 interface VoiceRecorderProps {
+  languageCode?: string;
   onTranscriptComplete?: (text: string, translation: string, language: string) => void;
   isSimulatedRecording?: boolean;
   simulatedTranscript?: { text: string; translation: string; language: string };
   onClose?: () => void;
 }
 
-const LANGUAGES = [
-  { code: "te", name: "Telugu (తెలుగు)", welcome: "మీ పంట గురించి అడగండి..." },
-  { code: "hi", name: "Hindi (हिन्दी)", welcome: "अपनी फसल के बारे में पूछें..." },
-  { code: "kn", name: "Kannada (ಕನ್ನಡ)", welcome: "ನಿಮ್ಮ ಬೆಳೆಯ గురించి కేలి..." },
-  { code: "ta", name: "Tamil (தமிழ்)", welcome: "உங்கள் பயிர் பற்றி கேளுங்கள்..." },
-  { code: "mr", name: "Marathi (मराठी)", welcome: "तुमच्या పికాबद्दल విచారా..." },
-  { code: "en", name: "English (English)", welcome: "Ask about your crop..." },
-];
+const WELCOME_MESSAGES: Record<string, string> = {
+  te: "మీ పంట గురించి అడగंडी...",
+  hi: "अपनी फसल के बारे में पूछें...",
+  kn: "ನಿಮ್ಮ ಬೆಳೆಯ ಬಗ್ಗೆ ಕೇಳಿ...",
+  ta: "உங்கள் பயிர் பற்றி கேளுங்கள்...",
+  mr: "तुमच्या पिकाबद्दल विचारा...",
+  en: "Ask about your crop...",
+};
+
+const translateText = async (text: string, sourceLangCode: string): Promise<string> => {
+  if (sourceLangCode === "en") return text;
+  try {
+    const res = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLangCode}&tl=en&dt=t&q=${encodeURIComponent(text)}`);
+    if (res.ok) {
+      const data = await res.json();
+      return data[0][0][0] || text;
+    }
+  } catch (e) {
+    console.error("Translation error:", e);
+  }
+  return text;
+};
 
 export default function VoiceRecorder({
+  languageCode = "en",
   onTranscriptComplete,
   isSimulatedRecording = false,
   simulatedTranscript,
   onClose,
 }: VoiceRecorderProps) {
-  const [selectedLang, setSelectedLang] = useState(LANGUAGES[0]);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [status, setStatus] = useState<"idle" | "listening" | "transcribing" | "translating" | "done">("idle");
-  const [langDropdownOpen, setLangDropdownOpen] = useState(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const [transcriptText, setTranscriptText] = useState("");
 
   // Audio wave bars simulation
   const [waveHeights, setWaveHeights] = useState<number[]>(Array(19).fill(6));
@@ -51,47 +68,95 @@ export default function VoiceRecorder({
     }
   }, [isRecording]);
 
-  const startRecording = () => {
-    setIsRecording(true);
-    setStatus("listening");
-    setRecordingDuration(0);
-    timerRef.current = setInterval(() => {
-      setRecordingDuration((prev) => {
-        if (prev >= 4) {
-          stopRecording();
-          return 4;
-        }
-        return prev + 1;
+  const handleUploadAndTranscribe = async (blob: Blob) => {
+    setStatus("transcribing");
+    try {
+      const formData = new FormData();
+      formData.append("file", blob, "input.webm");
+      formData.append("language", "auto"); // Always auto-detect language in the background
+
+      const res = await fetch("/api/chat/transcribe", {
+        method: "POST",
+        body: formData,
       });
-    }, 1000);
+
+      if (res.ok) {
+        const data = await res.json();
+        const transcribedText = data.text || "";
+        setTranscriptText(transcribedText);
+        
+        setStatus("translating");
+        
+        // Extract the detected language code or fall back to the selected language code
+        const detectedLangCode = data.language || "en";
+        
+        // Translate the native transcription to English
+        const translation = await translateText(transcribedText, detectedLangCode);
+        
+        setStatus("done");
+        setTimeout(() => {
+          if (onTranscriptComplete) {
+            onTranscriptComplete(transcribedText, translation, detectedLangCode);
+          }
+        }, 600);
+      } else {
+        throw new Error("Groq API transcription failed");
+      }
+    } catch (err) {
+      console.error("Transcription error:", err);
+      setStatus("idle");
+      alert("Failed to transcribe speech. Please try speaking again.");
+    }
+  };
+
+  const startRecording = async () => {
+    setTranscriptText("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || "audio/webm" });
+        await handleUploadAndTranscribe(audioBlob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setStatus("listening");
+      setRecordingDuration(0);
+
+      timerRef.current = setInterval(() => {
+        setRecordingDuration((prev) => {
+          if (prev >= 30) {
+            stopRecording();
+            return 30;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+    } catch (err) {
+      console.error("Failed to access microphone:", err);
+      alert("Microphone access is required for voice recording. Please check your browser settings.");
+      setStatus("idle");
+    }
   };
 
   const stopRecording = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     setIsRecording(false);
-    setStatus("transcribing");
-
-    setTimeout(() => {
-      setStatus("translating");
-      setTimeout(() => {
-        setStatus("done");
-        if (onTranscriptComplete) {
-          if (simulatedTranscript) {
-            onTranscriptComplete(
-              simulatedTranscript.text,
-              simulatedTranscript.translation,
-              simulatedTranscript.language
-            );
-          } else {
-            onTranscriptComplete(
-              "నెక్స్ట్ సీజన్ లో నేను ఏ పంట వేసుకోవాలి? నా పొలంలో తేమ తక్కువగా ఉంది.",
-              "What crop should I plant next season? My soil moisture is low.",
-              selectedLang.name
-            );
-          }
-        }
-      }, 1400);
-    }, 1400);
+    
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
   };
 
   useEffect(() => {
@@ -111,55 +176,25 @@ export default function VoiceRecorder({
     }
   };
 
-  return (
-    <div className="w-full max-w-md mx-auto p-6 rounded-[32px] glass-card border border-white/50 flex flex-col items-center relative overflow-hidden shadow-2xl">
-      {/* Background glass glows */}
-      <div className="absolute inset-0 bg-gradient-to-tr from-forest-light/5 via-ai-purple/5 to-google-blue/10 opacity-30 pointer-events-none" />
-      <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] rounded-full bg-google-blue/10 blur-3xl pointer-events-none" />
-      <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] rounded-full bg-ai-purple/10 blur-3xl pointer-events-none" />
+  const welcomeText = WELCOME_MESSAGES[languageCode] || WELCOME_MESSAGES.en;
 
-      {/* Language Selector */}
+  return (
+    <div className="w-full max-w-md mx-auto p-6 rounded-[32px] glass-card border border-white/50 flex flex-col items-center relative overflow-visible shadow-2xl">
+      {/* Background glass glows */}
+      <div className="absolute inset-0 rounded-[32px] overflow-hidden pointer-events-none">
+        <div className="absolute inset-0 bg-gradient-to-tr from-forest-light/5 via-ai-purple/5 to-google-blue/10 opacity-30" />
+        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] rounded-full bg-google-blue/10 blur-3xl" />
+        <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] rounded-full bg-ai-purple/10 blur-3xl" />
+      </div>
+
+      {/* Header Indicator */}
       <div className="relative w-full mb-8 z-10 flex justify-between items-center">
         <span className="text-[10px] font-bold text-forest-medium/55 flex items-center gap-1.5 uppercase tracking-widest font-sans">
-          <Globe className="w-3.5 h-3.5 text-forest-medium/70" /> Input Language
+          <Globe className="w-3.5 h-3.5 text-forest-medium/70" /> Language: Auto Detect
         </span>
-        
-        <div className="relative">
-          <button
-            onClick={() => setLangDropdownOpen(!langDropdownOpen)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/80 border border-forest-medium/10 text-xs font-bold text-forest-dark hover:bg-white hover:border-forest-medium/20 transition-all shadow-sm"
-          >
-            {selectedLang.name}
-            <ChevronDown className="w-3.5 h-3.5 opacity-60" />
-          </button>
-
-          <AnimatePresence>
-            {langDropdownOpen && (
-              <motion.div
-                initial={{ opacity: 0, y: 5 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 5 }}
-                className="absolute right-0 mt-2 w-48 rounded-2xl bg-white border border-forest-medium/10 shadow-xl overflow-hidden z-20 p-1"
-              >
-                {LANGUAGES.map((lang) => (
-                  <button
-                    key={lang.code}
-                    onClick={() => {
-                      setSelectedLang(lang);
-                      setLangDropdownOpen(false);
-                    }}
-                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold hover:bg-forest-light/5 text-forest-dark flex justify-between items-center transition-all"
-                  >
-                    {lang.name}
-                    {selectedLang.code === lang.code && (
-                      <Check className="w-3.5 h-3.5 text-forest-medium" />
-                    )}
-                  </button>
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+        <span className="px-2.5 py-1 rounded-full bg-forest-medium/10 text-forest-medium font-bold text-[9px] uppercase tracking-wider">
+          Background Sync
+        </span>
       </div>
 
       {/* Center Waveform & Mic */}
@@ -241,7 +276,7 @@ export default function VoiceRecorder({
               exit={{ opacity: 0, y: -5 }}
             >
               <p className="text-xs font-bold text-forest-dark/85 leading-relaxed">
-                "{selectedLang.welcome}"
+                "{welcomeText}"
               </p>
               <p className="text-[10px] text-forest-medium/40 mt-1 font-semibold uppercase tracking-wider">
                 Tap microphone to begin
@@ -264,7 +299,12 @@ export default function VoiceRecorder({
                 </span>
                 Listening...
               </div>
-              <p className="text-[10px] text-forest-medium/50 mt-1.5 font-mono">00:0{recordingDuration} / 00:04</p>
+              <p className="text-[10px] text-forest-medium/50 mt-1.5 font-mono">00:{recordingDuration < 10 ? `0${recordingDuration}` : recordingDuration} / 00:30</p>
+              {transcriptText && (
+                <p className="text-xs text-forest-dark font-bold mt-2.5 px-3 py-1.5 rounded-xl bg-white/70 border border-forest-medium/10 max-w-[280px] line-clamp-2">
+                  "{transcriptText}"
+                </p>
+              )}
             </motion.div>
           )}
 

@@ -59,7 +59,7 @@ export default function PlatformSelectionModal({
             {/* Close button */}
             <button
               onClick={onClose}
-              className="absolute top-4 right-4 p-2 rounded-full bg-white/50 hover:bg-white/80 text-forest-medium/60 hover:text-forest-dark transition-all z-10"
+              className="absolute top-4 right-4 p-2 rounded-full bg-white/50 hover:bg-white/80 text-forest-medium/60 hover:text-forest-dark transition-all z-30"
             >
               <X className="w-4 h-4" />
             </button>
