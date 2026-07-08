@@ -7,6 +7,13 @@ const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
+
+// Normalize the WhatsApp number by stripping spaces to ensure E.164 format
+// e.g. "whatsapp:+1 415 523 8886" -> "whatsapp:+14155238886"
+function getFromWhatsAppNumber(): string {
+  const raw = process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+14155238886";
+  return raw.replace(/\s+/g, "");
+}
 import { fetchAQIAndClimateContext } from "@/lib/climate";
 import { synthesize, VOICE_MAP } from "@/lib/tts";
 
@@ -537,7 +544,7 @@ Your response (reply directly in ${detectedLanguage ? `the detected language: ${
             console.log("Sending audio via Twilio media URL:", audioUrl);
 
             await twilioClient.messages.create({
-              from: process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+14155238886",
+              from: getFromWhatsAppNumber(),
               to: from,
               body: aiResponseText,
               mediaUrl: [audioUrl],
@@ -594,11 +601,19 @@ async function saveMessage(userId: string, sender: "farmer" | "ai", text: string
 }
 
 async function sendWhatsAppMessage(to: string, body: string) {
-  await twilioClient.messages.create({
-    from: process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+14155238886",
-    to,
-    body,
-  });
+  try {
+    const fromNumber = getFromWhatsAppNumber();
+    console.log(`Sending WhatsApp message from ${fromNumber} to ${to}, body length: ${body.length}`);
+    const message = await twilioClient.messages.create({
+      from: fromNumber,
+      to,
+      body,
+    });
+    console.log(`WhatsApp message sent successfully, SID: ${message.sid}`);
+  } catch (err: any) {
+    console.error(`Failed to send WhatsApp message to ${to}:`, err?.message || err);
+    throw err; // Re-throw so the caller knows the send failed
+  }
 }
 
 function returnTwiML() {

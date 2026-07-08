@@ -70,7 +70,7 @@ export async function POST(request: NextRequest) {
         : "✅ కేసు పరిష్కరించబడింది – కోడ్‌2క్రాప్ సపోర్ట్";
 
       await twilioClient.messages.create({
-        from: process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+14155238886",
+        from: (process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+14155238886").replace(/\s+/g, ""),
         to: whatsappTo,
         body: `${header}\n\n${closureMessage}`,
       });
