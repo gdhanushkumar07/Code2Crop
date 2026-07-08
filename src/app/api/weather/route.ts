@@ -93,9 +93,13 @@ export async function GET(request: NextRequest) {
     if (userId && userId !== "null" && userId !== "undefined") {
       try {
         await db.collection("users").doc(userId).set({
-          homeHub: homeHubData
+          homeHub: homeHubData,
+          coordinates: {
+            latitude: parseFloat(lat),
+            longitude: parseFloat(lon)
+          }
         }, { merge: true });
-        console.log(`Saved Home Hub telemetry to Firestore for user ${userId}`);
+        console.log(`Saved Home Hub telemetry and coordinates (${lat}, ${lon}) to Firestore for user ${userId}`);
       } catch (saveErr) {
         console.error("Failed to save Home Hub stats to Firestore:", saveErr);
       }
