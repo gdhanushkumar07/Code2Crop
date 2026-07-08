@@ -237,7 +237,7 @@ export async function POST(request: NextRequest) {
     };
     const voiceLang = LANG_MAP[detectedLanguage] || user?.language || "en";
 
-    // If image, download for Gemini Vision analysis and save permanently
+    // If image, download for Gemini Vision analysis and persist to Firestore
     let persistentImageUrl = "";
     if (mediaType === "image" && mediaUrl) {
       try {
@@ -248,8 +248,14 @@ export async function POST(request: NextRequest) {
           const mime = imgRes.headers.get("content-type") || "image/jpeg";
           imageBase64 = { mimeType: mime, data: buffer.toString("base64") };
 
-          // Store as base64 data URI — works on ephemeral filesystems (Railway)
-          persistentImageUrl = `data:${mime};base64,${buffer.toString("base64")}`;
+          // Save image to Firestore and serve via API route (works on Railway)
+          const imageId = `img_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+          await db.collection("case-images").doc(imageId).set({
+            mimeType: mime,
+            data: buffer.toString("base64"),
+            createdAt: Date.now(),
+          });
+          persistentImageUrl = `/api/case-image/${imageId}`;
         }
       } catch (err) {
         console.error("Failed to fetch image for vision analysis:", err);
