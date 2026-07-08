@@ -555,8 +555,8 @@ export default function RSKOfficerPortal() {
                     </p>
                   </div>
 
-                  {/* Farmer-uploaded image if available — admin only */}
-                  {isAdmin && selectedCase.farmerImage && (
+                  {/* Farmer-uploaded image if available */}
+                  {selectedCase.farmerImage && (
                     <div className="space-y-2">
                       <span className="text-[9px] text-slate-400 block uppercase font-bold">Farmer-Uploaded Image</span>
                       {imageLoading && (
