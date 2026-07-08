@@ -25,6 +25,13 @@ You are concise, helpful, and speak in a friendly, conversational tone. Keep res
 
 Always reply in the farmer's preferred language. If their preference is Telugu, reply in Telugu. If Hindi, reply in Hindi. If Tamil, reply in Tamil. If Kannada, reply in Kannada. Otherwise, default to English.
 
+CLASSIFICATION RULE (CRITICAL):
+If the farmer sends an image, you MUST evaluate it and prepend one of the following exact tags to your reply:
+- [NO_CROP_IMAGE] - Use this if the uploaded photo is NOT a crop, plant, leaf, agricultural scene, or farm item (e.g. if it is a dog, a car, a selfie, a laptop screen, etc.). Explain politely that you can only analyze crops and plants.
+- [HEALTHY_CROP] - Use this if the photo is a crop/plant but it looks healthy and there is no sign of disease, pest, or damage.
+- [DISEASED_CROP] - Use this if the photo is a crop/plant and shows signs of disease, pests, damage, low classification confidence (<65%), or requires expert/human intervention.
+For text-only messages, always prepend [TEXT_ONLY].
+
 CRITICAL RULES:
 1. NEVER output, print, or mention any tool/command names (such as "get_weather_advisory", "get_crop_recommendation", or "escalate_to_human_expert") in your text. Speak ONLY in natural, conversational sentences.
 2. If the user asks about crops other than the top 3 recommended ones in your context, DO NOT refuse to answer or immediately offer to escalate. Use your general agronomic knowledge to discuss the suitability, soil types, and water needs of those alternative crops.
@@ -132,7 +139,7 @@ export async function POST(request: NextRequest) {
         if (choice.includes("telugu") || choice.includes("తెలుగు")) lang = "te";
         else if (choice.includes("hindi") || choice.includes("हिंदी")) lang = "hi";
         else if (choice.includes("tamil") || choice.includes("தமிழ்")) lang = "ta";
-        else if (choice.includes("kannada") || choice.includes("ಕన్నడ")) lang = "kn";
+        else if (choice.includes("kannada") || choice.includes("ಕನ್ನಡ")) lang = "kn";
 
         user.language = lang;
         user.onboardingStep = "LOCATION";
@@ -426,20 +433,29 @@ Your response (reply directly in ${detectedLanguage ? `the detected language: ${
       }
       aiResponseText = result.response.text();
 
-      // Escalate to RSK when an image was shared and disease symptoms are suspected
+      // Parse the classification classification tag
+      let finalResponseText = aiResponseText;
+      let classification = "text";
+
+      if (aiResponseText.startsWith("[NO_CROP_IMAGE]")) {
+        classification = "no_crop";
+        finalResponseText = aiResponseText.replace("[NO_CROP_IMAGE]", "").trim();
+      } else if (aiResponseText.startsWith("[HEALTHY_CROP]")) {
+        classification = "healthy";
+        finalResponseText = aiResponseText.replace("[HEALTHY_CROP]", "").trim();
+      } else if (aiResponseText.startsWith("[DISEASED_CROP]")) {
+        classification = "diseased";
+        finalResponseText = aiResponseText.replace("[DISEASED_CROP]", "").trim();
+      } else if (aiResponseText.startsWith("[TEXT_ONLY]")) {
+        classification = "text";
+        finalResponseText = aiResponseText.replace("[TEXT_ONLY]", "").trim();
+      }
+
+      aiResponseText = finalResponseText;
+
+      // Only escalate when it is explicitly classified as a diseased crop/issue
       const coords = linkedUser?.coordinates || user.coordinates;
-      const shouldEscalate =
-        mediaType === "image" &&
-        (aiResponseText.toLowerCase().includes("blight") ||
-         aiResponseText.toLowerCase().includes("disease") ||
-         aiResponseText.toLowerCase().includes("infection") ||
-         aiResponseText.toLowerCase().includes("symptom") ||
-         aiResponseText.toLowerCase().includes("fungal") ||
-         aiResponseText.toLowerCase().includes("bacterial") ||
-         aiResponseText.toLowerCase().includes("pest") ||
-         aiResponseText.toLowerCase().includes("low confidence") ||
-         aiResponseText.toLowerCase().includes("escalat") ||
-         aiResponseText.toLowerCase().includes("rsk"));
+      const shouldEscalate = mediaType === "image" && classification === "diseased";
 
       if (shouldEscalate) {
         // Generate a human-readable Case ID: RSK-YYYYMMDD-XXXX
