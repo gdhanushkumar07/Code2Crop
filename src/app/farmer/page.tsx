@@ -708,10 +708,11 @@ export default function FarmerPortal() {
 
   const syncUserProfile = async (uid: string, email: string, displayName: string, photoURL: string, phone?: string, coords?: { latitude: number; longitude: number } | null) => {
     try {
+      const activeCoords = coords !== undefined ? coords : coordinates;
       const res = await fetch("/api/user/profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid, email, displayName, photoURL, phone, coordinates: coords }),
+        body: JSON.stringify({ uid, email, displayName, photoURL, phone, coordinates: activeCoords }),
       });
       if (res.ok) {
         const data = await res.json();
