@@ -200,7 +200,7 @@ export async function POST(request: NextRequest) {
     let diseaseResultObj = null;
 
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite" });
 
       const prompt = `${SYSTEM_PROMPT}
       
@@ -232,9 +232,9 @@ Your response (reply directly in the farmer's preferred language):`;
           ],
         };
       }
-    } catch (aiError) {
-      console.error("Gemini processing error:", aiError);
-      aiResponseText = "Namaste! I am currently checking your local parameters. Please verify your village details.";
+    } catch (aiError: any) {
+      console.error("Gemini processing error:", aiError?.message || aiError, JSON.stringify(aiError?.response?.data || ""));
+      aiResponseText = "Namaste! I'm experiencing a temporary connection issue with my AI engine. Please try again in a moment. If this persists, you can reach out to your local Rythu Seva Kendra (RSK) for immediate help.";
     }
 
     // Sanitize any accidentally leaked command names
