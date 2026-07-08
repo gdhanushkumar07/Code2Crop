@@ -506,7 +506,7 @@ export default function RSKOfficerPortal() {
                 {/* Visual Overview */}
                 <div
                   className="w-full h-44 rounded-2xl bg-cover bg-center border border-slate-200 relative overflow-hidden shadow-md"
-                  style={{ backgroundImage: `url(${selectedCase.farmerImage || selectedCase.image})` }}
+                  style={{ backgroundImage: `url(${selectedCase.image})` }}
                 >
                   <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
                   <div className="absolute bottom-3 left-3 text-left">
@@ -538,6 +538,13 @@ export default function RSKOfficerPortal() {
                   <div>
                     <span className="text-[9px] text-slate-400 block uppercase font-bold">AI Diagnosis Outcome</span>
                     <span className="text-xs font-bold text-slate-700 block mt-0.5">{selectedCase.issue}</span>
+                    {selectedCase.farmerImage && (
+                      <img
+                        src={selectedCase.farmerImage}
+                        alt="Farmer uploaded crop image"
+                        className="w-full rounded-2xl object-cover max-h-52 border border-slate-200 shadow-sm mt-2"
+                      />
+                    )}
                   </div>
 
                   <div>
