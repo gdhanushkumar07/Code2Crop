@@ -732,6 +732,25 @@ export default function FarmerPortal() {
             };
             setCoordinates(coords);
             fetchWeatherAndCrops(coords.latitude, coords.longitude);
+          } else {
+            // Coordinates not present in Firestore! Auto-fetch and update
+            if (typeof window !== "undefined" && navigator.geolocation) {
+              navigator.geolocation.getCurrentPosition(
+                (position) => {
+                  const coords = {
+                    latitude: position.coords.latitude,
+                    longitude: position.coords.longitude,
+                  };
+                  setCoordinates(coords);
+                  fetchWeatherAndCrops(coords.latitude, coords.longitude);
+                  // Sync to Firestore profile
+                  syncUserProfile(uid, email, displayName, photoURL, phone, coords);
+                },
+                (err) => {
+                  console.warn("Auto-geolocation on sync failed:", err);
+                }
+              );
+            }
           }
 
           // Check if phone needs to be prompted (only once per user account)

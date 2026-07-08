@@ -455,7 +455,15 @@ Your response (reply directly in ${detectedLanguage ? `the detected language: ${
 
       // Only escalate when it is explicitly classified as a diseased crop/issue
       const coords = linkedUser?.coordinates || user.coordinates;
-      const shouldEscalate = mediaType === "image" && classification === "diseased";
+      let shouldEscalate = mediaType === "image" && classification === "diseased";
+      let finalLat = coords?.latitude || null;
+      let finalLng = coords?.longitude || null;
+
+      if (shouldEscalate && (finalLat === null || finalLng === null || isNaN(finalLat) || isNaN(finalLng))) {
+        // Prevent escalation if location is missing. Ask user to share their location coordinates on WhatsApp.
+        shouldEscalate = false;
+        aiResponseText = "📍 I need your location coordinates to escalate this crop case to the Rythu Seva Kendra (RSK) officer. Please click the paperclip attachment icon (📎) on WhatsApp, select Location -> 'Send current location', and I will submit your case immediately.";
+      }
 
       if (shouldEscalate) {
         // Generate a human-readable Case ID: RSK-YYYYMMDD-XXXX
@@ -463,18 +471,10 @@ Your response (reply directly in ${detectedLanguage ? `the detected language: ${
         const datePart = nowEsc.toISOString().slice(0, 10).replace(/-/g, "");
         const randPart = Math.floor(1000 + Math.random() * 9000);
         const caseId = `RSK-${datePart}-${randPart}`;
-        
-        let finalLat = coords?.latitude || null;
-        let finalLng = coords?.longitude || null;
-        if (finalLat === null || finalLng === null || isNaN(finalLat) || isNaN(finalLng)) {
-          const seed = Date.now() % 100;
-          finalLat = 18.4386 + (seed / 100) * 0.16 - 0.08;
-          finalLng = 79.1288 + (((seed >> 2) % 100) / 100) * 0.16 - 0.08;
-        }
 
         const locationString = user.villageName && user.villageName !== "Unknown" && user.villageName !== "Updated Location"
           ? user.villageName
-          : `${finalLat.toFixed(6)}, ${finalLng.toFixed(6)}`;
+          : `${finalLat!.toFixed(6)}, ${finalLng!.toFixed(6)}`;
 
         await db.collection("cases").doc(caseId).set({
           id: caseId,
