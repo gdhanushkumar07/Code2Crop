@@ -201,17 +201,26 @@ export async function POST(request: NextRequest) {
         if (!audioRes.ok) {
           console.error("Twilio media download failed:", audioRes.status, "for", mediaUrl);
         } else {
-          const contentType = audioRes.headers.get("content-type") || "audio/ogg";
+          const rawContentType = audioRes.headers.get("content-type") || "audio/ogg";
           const arrayBuffer = await audioRes.arrayBuffer();
           const audioBuffer = Buffer.from(arrayBuffer);
-          console.log("Audio downloaded:", audioBuffer.length, "bytes, type:", contentType);
+          const simpleType = rawContentType.split(";")[0].trim();
+          console.log("Audio downloaded:", audioBuffer.length, "bytes, type:", rawContentType);
 
-          // Build multipart form data manually to avoid Blob/FormData serialization issues in Node.js
+          // Pick filename extension matching the actual format
+          let filename = "audio.ogg";
+          if (simpleType.includes("mp4") || simpleType.includes("m4a")) filename = "audio.m4a";
+          else if (simpleType.includes("mp3")) filename = "audio.mp3";
+          else if (simpleType.includes("wav")) filename = "audio.wav";
+          else if (simpleType.includes("webm")) filename = "audio.webm";
+          else if (simpleType.includes("aac")) filename = "audio.aac";
+
+          // Build multipart form data manually to avoid Blob/FormData serialization issues
           const boundary = "----FormBoundary" + Math.random().toString(36).substring(2);
+          const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${simpleType}\r\n\r\n`;
           const modelField = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-large-v3`;
           const formatField = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json`;
           const closing = `\r\n--${boundary}--\r\n`;
-          const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.ogg"\r\nContent-Type: ${contentType}\r\n\r\n`;
 
           const groqBody = Buffer.concat([
             Buffer.from(header),
@@ -267,18 +276,29 @@ export async function POST(request: NextRequest) {
           const mime = imgRes.headers.get("content-type") || "image/jpeg";
           imageBase64 = { mimeType: mime, data: buffer.toString("base64") };
 
-          // Resize image to fit within Firestore 1 MiB document limit (original phone photos are 2-5MB)
-          const resizedBuffer = await sharp(buffer)
-            .resize(800, 800, { fit: "inside", withoutEnlargement: true })
-            .jpeg({ quality: 80 })
-            .toBuffer();
-
           const imageId = `img_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-          await db.collection("case-images").doc(imageId).set({
-            mimeType: "image/jpeg",
-            data: resizedBuffer.toString("base64"),
-            createdAt: Date.now(),
-          });
+
+          try {
+            // Resize to fit within Firestore 1 MiB limit (handles HEIC, large photos)
+            const resized = await sharp(buffer)
+              .resize(800, 800, { fit: "inside", withoutEnlargement: true })
+              .jpeg({ quality: 80 })
+              .toBuffer();
+            await db.collection("case-images").doc(imageId).set({
+              mimeType: "image/jpeg",
+              data: resized.toString("base64"),
+              createdAt: Date.now(),
+            });
+          } catch (resizeErr) {
+            // Sharp failed (e.g. unsupported format from iPhone). Store the Twilio URL as proxy fallback.
+            console.error("Sharp resize failed, falling back to Twilio proxy:", resizeErr);
+            await db.collection("case-images").doc(imageId).set({
+              mediaUrl: mediaUrl,
+              mimeType: mime,
+              createdAt: Date.now(),
+            });
+          }
+
           persistentImageUrl = `/api/case-image/${imageId}`;
         }
       } catch (err) {
