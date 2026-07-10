@@ -252,7 +252,7 @@ export async function POST(request: NextRequest) {
     };
     const voiceLang = LANG_MAP[detectedLanguage] || user?.language || "en";
 
-    // If image, download for Gemini Vision analysis and save permanently to public/uploads/
+    // If image, download for Gemini Vision analysis and persist to Firestore
     let persistentImageUrl = "";
     if (mediaType === "image" && mediaUrl) {
       try {
@@ -263,18 +263,27 @@ export async function POST(request: NextRequest) {
           const mime = imgRes.headers.get("content-type") || "image/jpeg";
           imageBase64 = { mimeType: mime, data: buffer.toString("base64") };
 
-          // Save to public/uploads/ for permanent access (avoids Twilio URL expiry)
-          const ext = mime.split("/")[1] || "jpg";
           const imageId = `img_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-          const fs = await import("fs");
-          const path = await import("path");
-          const uploadDir = path.join(process.cwd(), "public", "uploads");
-          fs.mkdirSync(uploadDir, { recursive: true });
-          fs.writeFileSync(path.join(uploadDir, `${imageId}.${ext}`), buffer);
+          
+          if (buffer.length < 900 * 1024) {
+            // Save image to Firestore as base64
+            await db.collection("case-images").doc(imageId).set({
+              mimeType: mime,
+              data: buffer.toString("base64"),
+              createdAt: Date.now(),
+            });
+          } else {
+            // Store Twilio URL as proxy fallback to avoid Firestore size limit
+            await db.collection("case-images").doc(imageId).set({
+              mediaUrl: mediaUrl,
+              mimeType: mime,
+              createdAt: Date.now(),
+            });
+          }
 
           const host = process.env.NEXT_PUBLIC_BASE_URL || request.headers.get("host") || "localhost:3000";
-          const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
-          persistentImageUrl = `${protocol}://${host}/uploads/${imageId}.${ext}`;
+          const baseUrl = host.startsWith("http") ? host : `https://${host}`;
+          persistentImageUrl = `${baseUrl}/api/case-image/${imageId}`;
         }
       } catch (err) {
         console.error("Failed to fetch image for vision analysis:", err);
@@ -291,8 +300,7 @@ export async function POST(request: NextRequest) {
     } else if (mediaType === "audio") {
       if (transcribedAudioText) {
         effectiveMessage = transcribedAudioText;
-        const detectedInfo = detectedLanguage ? ` (detected: ${detectedLanguage})` : "";
-        mediaContext = `\n[The farmer sent a voice message. Transcription: "${transcribedAudioText}"${detectedInfo}]`;
+        mediaContext = `\n[Note: This query was spoken by the farmer as a voice note and transcribed to text. Please answer their agricultural query directly, conversationally and naturally. Do NOT mention that it was a voice message, and do NOT say you cannot hear audio.]`;
       } else {
         effectiveMessage = effectiveMessage || "[Voice message received]";
         mediaContext = `\n[The farmer sent a voice message but transcription failed. Ask them to try again or type their query.]`;
@@ -542,41 +550,45 @@ Your response (reply directly in ${detectedLanguage ? `the detected language: ${
         if (isLocal) {
           console.log("Skipping audio reply: host is localhost, Twilio cannot reach it. Set NEXT_PUBLIC_BASE_URL for audio replies.");
         } else {
-          try {
-            const voiceName = VOICE_MAP[voiceLang] || VOICE_MAP["en"];
-            console.log("TTS synthesizing with voice:", voiceName);
+          // Process TTS synthesis and WhatsApp voice note dispatch asynchronously in the background
+          // to avoid Twilio 15-second webhook HTTP timeouts.
+          (async () => {
+            try {
+              const voiceName = VOICE_MAP[voiceLang] || VOICE_MAP["en"];
+              console.log("TTS synthesizing with voice:", voiceName);
 
-            let rateString = "+0%";
-            const numericRate = 1.0;
-            if (numericRate > 1) {
-              rateString = `+${Math.round((numericRate - 1) * 100)}%`;
-            } else if (numericRate < 1) {
-              rateString = `-${Math.round((1 - numericRate) * 100)}%`;
+              let rateString = "+0%";
+              const numericRate = 1.0;
+              if (numericRate > 1) {
+                rateString = `+${Math.round((numericRate - 1) * 100)}%`;
+              } else if (numericRate < 1) {
+                rateString = `-${Math.round((1 - numericRate) * 100)}%`;
+              }
+
+              const audioBuffer = await synthesize(aiResponseText, voiceName, rateString);
+              console.log("TTS synthesis succeeded, size:", audioBuffer.length, "bytes");
+
+              const audioId = `audio_${Date.now()}`;
+              const fs = await import("fs");
+              const path = await import("path");
+              const publicDir = path.join(process.cwd(), "public", "tts");
+              fs.mkdirSync(publicDir, { recursive: true });
+              fs.writeFileSync(path.join(publicDir, `${audioId}.mp3`), audioBuffer);
+
+              const audioUrl = `${host.startsWith("http") ? "" : "https://"}${host}/tts/${audioId}.mp3`;
+              console.log("Sending audio via Twilio media URL:", audioUrl);
+
+              await twilioClient.messages.create({
+                from: getFromWhatsAppNumber(),
+                to: from,
+                body: "🎤 Voice response:",
+                mediaUrl: [audioUrl],
+              });
+              console.log("Audio message sent successfully via Twilio");
+            } catch (ttsError: unknown) {
+              console.error("TTS or audio send error:", ttsError instanceof Error ? ttsError.message : ttsError);
             }
-
-            const audioBuffer = await synthesize(aiResponseText, voiceName, rateString);
-            console.log("TTS synthesis succeeded, size:", audioBuffer.length, "bytes");
-
-            const audioId = `audio_${Date.now()}`;
-            const fs = await import("fs");
-            const path = await import("path");
-            const publicDir = path.join(process.cwd(), "public", "tts");
-            fs.mkdirSync(publicDir, { recursive: true });
-            fs.writeFileSync(path.join(publicDir, `${audioId}.mp3`), audioBuffer);
-
-            const audioUrl = `${host.startsWith("http") ? "" : "https://"}${host}/tts/${audioId}.mp3`;
-            console.log("Sending audio via Twilio media URL:", audioUrl);
-
-            await twilioClient.messages.create({
-              from: getFromWhatsAppNumber(),
-              to: from,
-              body: aiResponseText,
-              mediaUrl: [audioUrl],
-            });
-            console.log("Audio message sent successfully via Twilio");
-          } catch (ttsError: unknown) {
-            console.error("TTS or audio send error (text was already sent):", ttsError instanceof Error ? ttsError.message : ttsError);
-          }
+          })();
         }
       }
     }
