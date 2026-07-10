@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/firebase";
 import twilio from "twilio";
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+import { fetchAQIAndClimateContext } from "@/lib/climate";
+import { synthesize, VOICE_MAP } from "@/lib/tts";
 
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -14,8 +16,6 @@ function getFromWhatsAppNumber(): string {
   const raw = process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+14155238886";
   return raw.replace(/\s+/g, "");
 }
-import { fetchAQIAndClimateContext } from "@/lib/climate";
-import { synthesize, VOICE_MAP } from "@/lib/tts";
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY || "");
 
@@ -63,15 +63,16 @@ async function fetchOpenMeteoWeather(lat: number, lon: number) {
 // Handler for incoming Twilio messages
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData();
+    const rawBody = await request.text();
+    const params = new URLSearchParams(rawBody);
 
-    const from = formData.get("From") as string; // e.g. "whatsapp:+919876543210"
-    const body = (formData.get("Body") as string || "").trim();
-    const mediaUrl = formData.get("MediaUrl0") as string | null;
-    const mediaContentType = formData.get("MediaContentType0") as string | null;
-    const numMedia = formData.get("NumMedia") as string | null;
-    const latitude = formData.get("Latitude") as string | null;
-    const longitude = formData.get("Longitude") as string | null;
+    const from = params.get("From") || ""; // e.g. "whatsapp:+919876543210"
+    const body = (params.get("Body") || "").trim();
+    const mediaUrl = params.get("MediaUrl0") || null;
+    const mediaContentType = params.get("MediaContentType0") || null;
+    const numMedia = params.get("NumMedia") || null;
+    const latitude = params.get("Latitude") || null;
+    const longitude = params.get("Longitude") || null;
 
     if (!from) {
       return NextResponse.json({ error: "Missing From parameter" }, { status: 400 });
@@ -116,8 +117,7 @@ export async function POST(request: NextRequest) {
 
       const reply = "Welcome to Crop2Code AI! 🌾 Let's get you registered. What is your full name?";
       await saveMessage(userId, "ai", reply, timestamp);
-      await sendWhatsAppMessage(from, reply);
-      return returnTwiML();
+      return returnTwiML(reply);
     }
 
     // 2. Process onboarding if in progress
@@ -174,8 +174,7 @@ export async function POST(request: NextRequest) {
       await userDocRef.set(user);
       await saveMessage(userId, "farmer", body || "[Media/Location shared]", timestamp);
       await saveMessage(userId, "ai", reply, timestamp);
-      await sendWhatsAppMessage(from, reply);
-      return returnTwiML();
+      return returnTwiML(reply);
     }
 
     // 3. Normal conversation flow - detect media type
@@ -320,9 +319,9 @@ export async function POST(request: NextRequest) {
 
     if (activeCase) {
       // Admin is actively chatting on this case — disable AI, just acknowledge and log
-      await saveMessage(userId, "ai", "Your case is being reviewed by an RSK officer. They will respond to you shortly.", timestamp);
-      await sendWhatsAppMessage(from, "Your case is being reviewed by an RSK officer. They will respond to you shortly.");
-      return returnTwiML();
+      const reply = "Your case is being reviewed by an RSK officer. They will respond to you shortly.";
+      await saveMessage(userId, "ai", reply, timestamp);
+      return returnTwiML(reply);
     }
 
     // 4. Generate AI response
@@ -512,8 +511,8 @@ Your response (reply directly in ${detectedLanguage ? `the detected language: ${
     // Save AI response to chat history
     await saveMessage(userId, "ai", aiResponseText, timestamp);
 
-    // Always send the text reply first so the farmer gets a guaranteed response
-    await sendWhatsAppMessage(from, aiResponseText);
+    // Prepare the text reply via TwiML response
+    const twimlResponse = returnTwiML(aiResponseText);
 
     // If the input was audio and transcription succeeded, also attempt to send
     // a synthesized voice message as a follow-up in the same language
@@ -569,7 +568,7 @@ Your response (reply directly in ${detectedLanguage ? `the detected language: ${
       }
     }
 
-    return returnTwiML();
+    return twimlResponse;
   } catch (error) {
     console.error("WhatsApp webhook server error:", error);
     return NextResponse.json({ error: "Webhook execution failed" }, { status: 500 });
@@ -628,12 +627,30 @@ async function sendWhatsAppMessage(to: string, body: string) {
   }
 }
 
-function returnTwiML() {
+function returnTwiML(body?: string) {
+  let xml = `<?xml version="1.0" encoding="UTF-8"?><Response>`;
+  if (body) {
+    xml += `<Message><Body>${escapeXml(body)}</Body></Message>`;
+  }
+  xml += `</Response>`;
   return new NextResponse(
-    `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`,
+    xml,
     {
       status: 200,
       headers: { "Content-Type": "text/xml" },
     }
   );
+}
+
+function escapeXml(unsafe: string): string {
+  return unsafe.replace(/[<>&'"]/g, (c) => {
+    switch (c) {
+      case "<": return "&lt;";
+      case ">": return "&gt;";
+      case "&": return "&amp;";
+      case "'": return "&apos;";
+      case "\"": return "&quot;";
+      default: return c;
+    }
+  });
 }
