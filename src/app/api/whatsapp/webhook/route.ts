@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/firebase";
 import twilio from "twilio";
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+import sharp from "sharp";
+import type { DocumentData } from "firebase-admin/firestore";
 import { fetchAQIAndClimateContext } from "@/lib/climate";
 import { synthesize, VOICE_MAP } from "@/lib/tts";
 
@@ -91,7 +93,7 @@ export async function POST(request: NextRequest) {
     let user = userDoc.exists ? userDoc.data() : null;
 
     // Resolve linked Google profile if synced
-    let linkedUser: any = null;
+    let linkedUser: DocumentData | undefined;
     if (user && user.linkedGoogleUid) {
       try {
         const linkedDoc = await db.collection("users").doc(user.linkedGoogleUid).get();
@@ -201,20 +203,31 @@ export async function POST(request: NextRequest) {
         } else {
           const contentType = audioRes.headers.get("content-type") || "audio/ogg";
           const arrayBuffer = await audioRes.arrayBuffer();
-          console.log("Audio downloaded:", arrayBuffer.byteLength, "bytes, type:", contentType);
+          const audioBuffer = Buffer.from(arrayBuffer);
+          console.log("Audio downloaded:", audioBuffer.length, "bytes, type:", contentType);
 
-          // Use global Blob constructor (not the undici-internal one from response.blob())
-          // to ensure compatibility with FormData multipart serialization
-          const audioFile = new Blob([arrayBuffer], { type: contentType });
-          const groqForm = new FormData();
-          groqForm.append("file", audioFile, "audio.ogg");
-          groqForm.append("model", "whisper-large-v3");
-          groqForm.append("response_format", "verbose_json");
+          // Build multipart form data manually to avoid Blob/FormData serialization issues in Node.js
+          const boundary = "----FormBoundary" + Math.random().toString(36).substring(2);
+          const modelField = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-large-v3`;
+          const formatField = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json`;
+          const closing = `\r\n--${boundary}--\r\n`;
+          const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.ogg"\r\nContent-Type: ${contentType}\r\n\r\n`;
+
+          const groqBody = Buffer.concat([
+            Buffer.from(header),
+            audioBuffer,
+            Buffer.from(modelField),
+            Buffer.from(formatField),
+            Buffer.from(closing),
+          ]);
 
           const groqRes = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
             method: "POST",
-            headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-            body: groqForm,
+            headers: {
+              Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+              "Content-Type": `multipart/form-data; boundary=${boundary}`,
+            },
+            body: groqBody,
           });
 
           if (groqRes.ok) {
@@ -254,11 +267,16 @@ export async function POST(request: NextRequest) {
           const mime = imgRes.headers.get("content-type") || "image/jpeg";
           imageBase64 = { mimeType: mime, data: buffer.toString("base64") };
 
-          // Save image to Firestore and serve via API route (works on Railway)
+          // Resize image to fit within Firestore 1 MiB document limit (original phone photos are 2-5MB)
+          const resizedBuffer = await sharp(buffer)
+            .resize(800, 800, { fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality: 80 })
+            .toBuffer();
+
           const imageId = `img_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
           await db.collection("case-images").doc(imageId).set({
-            mimeType: mime,
-            data: buffer.toString("base64"),
+            mimeType: "image/jpeg",
+            data: resizedBuffer.toString("base64"),
             createdAt: Date.now(),
           });
           persistentImageUrl = `/api/case-image/${imageId}`;
@@ -390,7 +408,7 @@ export async function POST(request: NextRequest) {
 
       if (linkedUser && linkedUser.cropSuitability) {
         localGrounding += `\n- Synced Website Crop Suitability Recommendations (always refer to these exact options and details if the user asks for crop choices or recommendations):`;
-        linkedUser.cropSuitability.forEach((c: any) => {
+        linkedUser.cropSuitability.forEach((c: Record<string, unknown>) => {
           localGrounding += `\n  * Crop: ${c.name} (${c.suitability}% suitability, Expected Yield: ${c.yield}, Market Returns: ${c.profit}, Soil Requirement: ${c.soilHealth}, Details: ${c.details})`;
         });
       }
@@ -455,8 +473,8 @@ Your response (reply directly in ${detectedLanguage ? `the detected language: ${
       // Only escalate when it is explicitly classified as a diseased crop/issue
       const coords = linkedUser?.coordinates || user.coordinates;
       let shouldEscalate = mediaType === "image" && classification === "diseased";
-      let finalLat = coords?.latitude || null;
-      let finalLng = coords?.longitude || null;
+      const finalLat = coords?.latitude || null;
+      const finalLng = coords?.longitude || null;
 
       if (shouldEscalate && (finalLat === null || finalLng === null || isNaN(finalLat) || isNaN(finalLng))) {
         // Prevent escalation if location is missing. Ask user to share their location coordinates on WhatsApp.
@@ -561,8 +579,8 @@ Your response (reply directly in ${detectedLanguage ? `the detected language: ${
               mediaUrl: [audioUrl],
             });
             console.log("Audio message sent successfully via Twilio");
-          } catch (ttsError: any) {
-            console.error("TTS or audio send error (text was already sent):", ttsError?.message || ttsError);
+          } catch (ttsError: unknown) {
+            console.error("TTS or audio send error (text was already sent):", ttsError instanceof Error ? ttsError.message : ttsError);
           }
         }
       }
@@ -583,7 +601,7 @@ export async function GET() {
 // Helpers
 async function saveMessage(userId: string, sender: "farmer" | "ai", text: string, timestamp: string, imageUrl?: string) {
   const msgId = `msg_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const messageData: any = {
+  const messageData: Record<string, unknown> = {
     id: msgId,
     sender,
     text,
@@ -609,22 +627,6 @@ async function saveMessage(userId: string, sender: "farmer" | "ai", text: string
     .collection("messages")
     .doc(msgId)
     .set(messageData);
-}
-
-async function sendWhatsAppMessage(to: string, body: string) {
-  try {
-    const fromNumber = getFromWhatsAppNumber();
-    console.log(`Sending WhatsApp message from ${fromNumber} to ${to}, body length: ${body.length}`);
-    const message = await twilioClient.messages.create({
-      from: fromNumber,
-      to,
-      body,
-    });
-    console.log(`WhatsApp message sent successfully, SID: ${message.sid}`);
-  } catch (err: any) {
-    console.error(`Failed to send WhatsApp message to ${to}:`, err?.message || err);
-    throw err; // Re-throw so the caller knows the send failed
-  }
 }
 
 function returnTwiML(body?: string) {
