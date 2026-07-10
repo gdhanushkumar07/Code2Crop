@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/firebase";
 import twilio from "twilio";
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
-import sharp from "sharp";
+// sharp was imported here but is not installed — using public/uploads/ file system instead
 import type { DocumentData } from "firebase-admin/firestore";
 import { fetchAQIAndClimateContext } from "@/lib/climate";
 import { synthesize, VOICE_MAP } from "@/lib/tts";
@@ -215,28 +215,15 @@ export async function POST(request: NextRequest) {
           else if (simpleType.includes("webm")) filename = "audio.webm";
           else if (simpleType.includes("aac")) filename = "audio.aac";
 
-          // Build multipart form data manually to avoid Blob/FormData serialization issues
-          const boundary = "----FormBoundary" + Math.random().toString(36).substring(2);
-          const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${simpleType}\r\n\r\n`;
-          const modelField = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-large-v3`;
-          const formatField = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json`;
-          const closing = `\r\n--${boundary}--\r\n`;
-
-          const groqBody = Buffer.concat([
-            Buffer.from(header),
-            audioBuffer,
-            Buffer.from(modelField),
-            Buffer.from(formatField),
-            Buffer.from(closing),
-          ]);
+          const groqForm = new FormData();
+          groqForm.append("file", new Blob([audioBuffer], { type: simpleType }), filename);
+          groqForm.append("model", "whisper-large-v3");
+          groqForm.append("response_format", "verbose_json");
 
           const groqRes = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
             method: "POST",
-            headers: {
-              Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-              "Content-Type": `multipart/form-data; boundary=${boundary}`,
-            },
-            body: groqBody,
+            headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+            body: groqForm,
           });
 
           if (groqRes.ok) {
@@ -265,7 +252,7 @@ export async function POST(request: NextRequest) {
     };
     const voiceLang = LANG_MAP[detectedLanguage] || user?.language || "en";
 
-    // If image, download for Gemini Vision analysis and persist to Firestore
+    // If image, download for Gemini Vision analysis and save permanently to public/uploads/
     let persistentImageUrl = "";
     if (mediaType === "image" && mediaUrl) {
       try {
@@ -276,30 +263,18 @@ export async function POST(request: NextRequest) {
           const mime = imgRes.headers.get("content-type") || "image/jpeg";
           imageBase64 = { mimeType: mime, data: buffer.toString("base64") };
 
+          // Save to public/uploads/ for permanent access (avoids Twilio URL expiry)
+          const ext = mime.split("/")[1] || "jpg";
           const imageId = `img_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+          const fs = await import("fs");
+          const path = await import("path");
+          const uploadDir = path.join(process.cwd(), "public", "uploads");
+          fs.mkdirSync(uploadDir, { recursive: true });
+          fs.writeFileSync(path.join(uploadDir, `${imageId}.${ext}`), buffer);
 
-          try {
-            // Resize to fit within Firestore 1 MiB limit (handles HEIC, large photos)
-            const resized = await sharp(buffer)
-              .resize(800, 800, { fit: "inside", withoutEnlargement: true })
-              .jpeg({ quality: 80 })
-              .toBuffer();
-            await db.collection("case-images").doc(imageId).set({
-              mimeType: "image/jpeg",
-              data: resized.toString("base64"),
-              createdAt: Date.now(),
-            });
-          } catch (resizeErr) {
-            // Sharp failed (e.g. unsupported format from iPhone). Store the Twilio URL as proxy fallback.
-            console.error("Sharp resize failed, falling back to Twilio proxy:", resizeErr);
-            await db.collection("case-images").doc(imageId).set({
-              mediaUrl: mediaUrl,
-              mimeType: mime,
-              createdAt: Date.now(),
-            });
-          }
-
-          persistentImageUrl = `/api/case-image/${imageId}`;
+          const host = process.env.NEXT_PUBLIC_BASE_URL || request.headers.get("host") || "localhost:3000";
+          const protocol = host.includes("localhost") || host.includes("127.0.0.1") ? "http" : "https";
+          persistentImageUrl = `${protocol}://${host}/uploads/${imageId}.${ext}`;
         }
       } catch (err) {
         console.error("Failed to fetch image for vision analysis:", err);
@@ -324,7 +299,7 @@ export async function POST(request: NextRequest) {
       }
     } else if (mediaType === "image") {
       effectiveMessage = effectiveMessage || "[Image Uploaded]";
-      mediaContext = `\n[The farmer attached a leaf photo. Perform visual disease diagnostic analysis.]`;
+      mediaContext = `\n[The farmer attached a photo. Identify what the image shows (diseased plant, farm view, healthy plant, or non-agricultural), then follow the IMAGE HANDLING RULES.]`;
     } else if (mediaUrl && mediaType === "none") {
       effectiveMessage = effectiveMessage || "[Media shared]";
       mediaContext = `\n[The farmer shared a file (${mediaContentType || "unknown type"})]`;
