@@ -4,7 +4,6 @@
 
 Code2Crop is an AI-powered agricultural advisory platform that helps smallholder farmers make data-driven crop decisions using weather forecasting, climate history, and generative AI — delivered through a farmer-first web app **and** WhatsApp, with a human expert safety net for every uncertain AI call.
 
-Built for **Google Build with AI — Code for Communities**.
 
 ---
 
